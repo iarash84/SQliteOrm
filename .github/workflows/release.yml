@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build GitHub release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore SQliteOrm.sln
+
+      - name: Build
+        run: dotnet build SQliteOrm.sln --configuration Release --no-restore
+
+      - name: Run tests
+        run: dotnet test SQliteOrm.sln --configuration Release --no-build --no-restore --verbosity normal
+
+      - name: Pack NuGet package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dotnet pack SQliteOrm/SQliteOrm.csproj --configuration Release --no-build --no-restore --output artifacts -p:PackageVersion="$version"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" artifacts/*.nupkg --generate-notes
