@@ -35,9 +35,26 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
-          dotnet pack SQliteOrm/SQliteOrm.csproj --configuration Release --no-build --no-restore --output artifacts -p:PackageVersion="$version"
+          dotnet pack SQliteOrm/SQliteOrm.csproj \
+            --configuration Release \
+            --no-build \
+            --no-restore \
+            --output artifacts \
+            -p:PackageVersion="$version"
+
+      - name: Publish NuGet package
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          dotnet nuget push artifacts/*.nupkg \
+            --api-key "$NUGET_API_KEY" \
+            --source "https://api.nuget.org/v3/index.json" \
+            --skip-duplicate
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" artifacts/*.nupkg --generate-notes
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            artifacts/*.nupkg \
+            --generate-notes
