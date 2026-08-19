@@ -1082,7 +1082,14 @@ namespace SQliteOrm
         private static List<T> MapReaderToObjects<T>(SQLiteDataReader reader) where T : new()
         {
             var results = new List<T>();
-            var properties = GetMappedProperties(typeof(T)).Where(p => p.CanWrite).ToArray();
+            
+            var properties = typeof(T)
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(p =>
+                    p.CanWrite &&
+                    p.GetIndexParameters().Length == 0)
+                .ToArray();
+                
             var ordinals = Enumerable.Range(0, reader.FieldCount)
                 .ToDictionary(reader.GetName, i => i, StringComparer.OrdinalIgnoreCase);
 
