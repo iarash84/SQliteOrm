@@ -3,21 +3,24 @@ using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq.Expressions;
 using System.Data.SQLite;
 using SQliteOrm;
-
-[assembly: CollectionBehavior(DisableTestParallelization = true)]
+using SQliteOrm.Mapping;
+using SQliteOrm.Persistence;
 
 namespace SQliteOrm.Tests;
 
-public sealed class SqLiteOrmTests : IDisposable
+public sealed class SqliteOrmTests : IDisposable
 {
     private readonly string _databasePath;
-    private readonly SqLiteOrm _orm;
+    private readonly SqliteOrm _orm;
 
-    public SqLiteOrmTests()
+    public SqliteOrmTests()
     {
         _databasePath = Path.Combine(Path.GetTempPath(), $"sqlite-orm-tests-{Guid.NewGuid():N}.db");
-        SqLiteOrm.Initialize(_databasePath);
-        _orm = SqLiteOrm.Instance;
+        _orm = new SqliteOrm(new SqliteOrmOptions
+        {
+            ConnectionString = $"Data Source={_databasePath}",
+            EnableForeignKeys = true
+        });
         _orm.CreateTable<Person>();
         _orm.CreateTable<Customer>();
         _orm.CreateTable<Purchase>();
@@ -49,9 +52,9 @@ public sealed class SqLiteOrmTests : IDisposable
     {
         var ada = NewPerson("Ada", 31, true);
         var id = _orm.Insert(ada);
-        ada.Id = id;
 
         Assert.True(id > 0);
+        Assert.Equal(id, ada.Id);
         Assert.True(_orm.Exists<Person>(id));
         Assert.True(_orm.Exists<Person>(p => p.Name, "Ada"));
         Assert.Equal(1, _orm.Count<Person>());
@@ -153,6 +156,189 @@ public sealed class SqLiteOrmTests : IDisposable
             orderBy: new() { [p => p.Age] = SortOrder.DESC });
 
         Assert.Equal(new[] { "High", "Middle", "Low" }, result.Select(p => p.Name));
+    }
+
+    [Fact]
+    public void Strongly_typed_query_executes_terminal_operations()
+    {
+        _orm.Insert(new List<Person>
+        {
+            NewPerson("Minor", 17, true),
+            NewPerson("Adult", 20, true),
+            NewPerson("Inactive", 30, false)
+        });
+
+        var adults = _orm.Table<Person>()
+            .Where(person => person.Active)
+            .Where(person => person.Age >= 18);
+
+        Assert.Equal("Adult", Assert.Single(adults.ToList()).Name);
+        Assert.Equal("Adult", adults.First().Name);
+        Assert.Equal("Adult", adults.FirstOrDefault()!.Name);
+        Assert.Equal("Adult", adults.Single().Name);
+        Assert.Equal("Adult", adults.SingleOrDefault()!.Name);
+        Assert.True(adults.Any());
+        Assert.Equal(1, adults.Count());
+        Assert.True(_orm.Any<Person>(person => person.Name == "Adult"));
+        Assert.Equal(2, _orm.Count<Person>(person => person.Active));
+        Assert.Equal("Adult", _orm.FirstOrDefault<Person>(person => person.Age == 20)!.Name);
+    }
+
+    [Fact]
+    public void Strongly_typed_query_has_correct_terminal_semantics_and_is_deferred()
+    {
+        var deferred = _orm.Table<Person>().Where(person => person.Age + 1 > 18);
+        Assert.Throws<NotSupportedException>(() => deferred.ToList());
+
+        Assert.Null(_orm.Table<Person>().Where(person => person.Name == "missing").FirstOrDefault());
+        Assert.Null(_orm.Table<Person>().Where(person => person.Name == "missing").SingleOrDefault());
+        Assert.Throws<InvalidOperationException>(() => _orm.Table<Person>().First());
+
+        _orm.Insert(new List<Person> { NewPerson("One", 1), NewPerson("Two", 2) });
+        Assert.Throws<InvalidOperationException>(() => _orm.Table<Person>().Single());
+        Assert.Throws<InvalidOperationException>(() => _orm.Table<Person>().SingleOrDefault());
+
+        var command = _orm.Table<Person>().Where(person => person.Name == "Robert'); DROP TABLE Person;--").BuildSelect(1);
+        Assert.EndsWith(" LIMIT @__limit;", command.Sql);
+        Assert.DoesNotContain("DROP TABLE", command.Sql);
+        Assert.Equal(2, command.Parameters!.Count);
+        Assert.Equal(1, command.Parameters["@__limit"]);
+    }
+
+    [Fact]
+    public void Strongly_typed_query_supports_ordering_and_then_by()
+    {
+        _orm.Insert(new List<Person>
+        {
+            NewPerson("Charlie", 20), NewPerson("Alpha", 20), NewPerson("Bravo", 10)
+        });
+
+        Assert.Equal(new[] { "Alpha", "Bravo", "Charlie" },
+            _orm.Table<Person>().OrderBy(person => person.Name).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "Charlie", "Bravo", "Alpha" },
+            _orm.Table<Person>().OrderByDescending(person => person.Name).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "Bravo", "Alpha", "Charlie" },
+            _orm.Table<Person>().OrderBy(person => person.Age).ThenBy(person => person.Name).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "Bravo", "Charlie", "Alpha" },
+            _orm.Table<Person>().OrderBy(person => person.Age).ThenByDescending(person => person.Name).ToList().Select(person => person.Name));
+
+        Assert.Throws<InvalidOperationException>(() => _orm.Table<Person>().ThenBy(person => person.Name));
+        Assert.Throws<NotSupportedException>(() => _orm.Table<Person>().OrderBy(person => person.Age + 1));
+
+        var mappedCommand = _orm.Table<MappedRecord>().OrderBy(record => record.Name).BuildSelect();
+        Assert.Contains("ORDER BY \"display_name\" ASC", mappedCommand.Sql);
+    }
+
+    [Fact]
+    public void Strongly_typed_query_supports_skip_take_and_filtered_paging()
+    {
+        _orm.Insert(new List<Person>
+        {
+            NewPerson("A", 10, true), NewPerson("B", 20, false), NewPerson("C", 30, true),
+            NewPerson("D", 40, true), NewPerson("E", 50, false)
+        });
+
+        Assert.Equal(new[] { "C", "D", "E" },
+            _orm.Table<Person>().OrderBy(person => person.Age).Skip(2).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "A", "B" },
+            _orm.Table<Person>().OrderBy(person => person.Age).Take(2).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "B", "C" },
+            _orm.Table<Person>().OrderBy(person => person.Age).Skip(1).Take(2).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "C", "D" }, _orm.Table<Person>()
+            .Where(person => person.Active).OrderBy(person => person.Age).Skip(1).Take(2)
+            .ToList().Select(person => person.Name));
+        Assert.Equal(1, _orm.Table<Person>().OrderBy(person => person.Age).Skip(4).Count());
+        Assert.False(_orm.Table<Person>().Take(0).Any());
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => _orm.Table<Person>().Skip(-1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _orm.Table<Person>().Take(-1));
+
+        var command = _orm.Table<Person>().OrderBy(person => person.Name)
+            .ThenByDescending(person => person.Age).Skip(5).Take(10).BuildSelect();
+        Assert.Contains("ORDER BY \"Name\" ASC, \"Age\" DESC LIMIT @__limit OFFSET @__offset", command.Sql);
+        Assert.Equal(10, command.Parameters!["@__limit"]);
+        Assert.Equal(5, command.Parameters["@__offset"]);
+    }
+
+    [Fact]
+    public void Predicate_delete_supports_nested_conditions_nulls_and_affected_count()
+    {
+        var youngInactive = NewPerson("Young", 10); youngInactive.Nickname = "known";
+        var nullInactive = NewPerson("Null inactive", 30);
+        var retainedInactive = NewPerson("Retained", 30); retainedInactive.Nickname = "known";
+        var active = NewPerson("Active", 10, true);
+        _orm.Insert(new List<Person> { youngInactive, nullInactive, retainedInactive, active });
+
+        var deleted = _orm.Delete<Person>(person =>
+            !person.Active && (person.Age < 18 || person.Nickname == null));
+
+        Assert.Equal(2, deleted);
+        Assert.Equal(new[] { "Active", "Retained" },
+            _orm.Table<Person>().OrderBy(person => person.Name).ToList().Select(person => person.Name));
+        Assert.Equal(1, _orm.Delete<Person>(person => person.Nickname == null));
+
+        var injection = "Retained' OR 1=1 --";
+        Assert.Equal(0, _orm.Delete<Person>(person => person.Name == injection));
+        Assert.Equal(1, _orm.Count<Person>());
+        Assert.Throws<ArgumentNullException>(() =>
+            _orm.Delete<Person>((Expression<Func<Person, bool>>)null!));
+        Assert.Equal(1, _orm.DeleteAll<Person>());
+        Assert.Equal(0, _orm.Count<Person>());
+    }
+
+    [Fact]
+    public void Transaction_commits_multiple_entity_types_and_supports_all_session_operations()
+    {
+        SqliteTransactionSession? capturedSession = null;
+        _orm.Transaction(tx =>
+        {
+            capturedSession = tx;
+            var customer = new Customer { Name = "Before" };
+            tx.Insert(customer);
+            customer.Name = "After";
+            tx.Update(customer);
+            tx.Insert(new Purchase { CustomerId = customer.Id, Description = "Pending" });
+            tx.Execute("UPDATE \"Purchase\" SET \"Description\" = @value",
+                new() { ["@value"] = "Committed" });
+
+            Assert.Equal(1, tx.ExecuteScalar<int>("SELECT COUNT(*) FROM \"Customer\""));
+            Assert.Equal("After", tx.Table<Customer>().First().Name);
+            Assert.Equal("Committed", tx.Query<Purchase>("SELECT * FROM \"Purchase\"").Single().Description);
+        });
+
+        Assert.Equal("After", _orm.Table<Customer>().Single().Name);
+        Assert.Equal("Committed", _orm.Table<Purchase>().Single().Description);
+        Assert.Throws<InvalidOperationException>(() => capturedSession!.Execute("SELECT 1"));
+    }
+
+    [Fact]
+    public void Transaction_rolls_back_all_changes_and_rethrows_original_exception()
+    {
+        var expected = new TestTransactionException("rollback");
+        var actual = Assert.Throws<TestTransactionException>(() => _orm.Transaction(tx =>
+        {
+            tx.Insert(NewPerson("Rolled back", 1));
+            tx.Insert(new Customer { Name = "Also rolled back" });
+            Assert.Equal(1, tx.Table<Person>().Count());
+            throw expected;
+        }));
+
+        Assert.Same(expected, actual);
+        Assert.Equal(0, _orm.Count<Person>());
+        Assert.Equal(0, _orm.Count<Customer>());
+    }
+
+    [Fact]
+    public void Nested_transactions_are_rejected_and_outer_transaction_rolls_back()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() => _orm.Transaction(tx =>
+        {
+            tx.Insert(NewPerson("Outer", 1));
+            _orm.Transaction(_ => { });
+        }));
+
+        Assert.Contains("Nested transactions", exception.Message);
+        Assert.Equal(0, _orm.Count<Person>());
     }
 
     [Fact]
@@ -265,7 +451,7 @@ public sealed class SqLiteOrmTests : IDisposable
         Assert.Throws<ArgumentException>(() => _orm.CreateTable<InvalidForeignKey>());
         Assert.Throws<InvalidOperationException>(() => _orm.GetAll<Person>(new() { [p => p.Age + 1] = 2 }));
         Assert.Throws<ArgumentException>(() => _orm.Delete<Person>(p => p.Age + 1, "1"));
-        Assert.Throws<ArgumentNullException>(() => _orm.Upsert<Person>(p => p.Id, NewPerson("invalid", 1)));
+        Assert.Throws<InvalidOperationException>(() => _orm.Upsert(NewPerson("invalid", 1), p => p.Age));
     }
 
     [Fact]
@@ -281,13 +467,197 @@ public sealed class SqLiteOrmTests : IDisposable
     }
 
     [Fact]
-    public void CreateTable_rejects_a_non_integer_autoincrement_key()
+    public void CreateTable_allows_a_non_integer_manual_key()
     {
-        Assert.Throws<InvalidOperationException>(() => _orm.CreateTable<InvalidKeyType>());
+        _orm.CreateTable<InvalidKeyType>();
+        var key = Guid.NewGuid();
+        _orm.Insert(new InvalidKeyType { Id = key });
+        Assert.Equal(key, _orm.Find<InvalidKeyType, Guid>(key)!.Id);
+    }
+
+    [Fact]
+    public void Primary_key_operations_are_metadata_driven()
+    {
+        _orm.CreateTable<NamedLongKey>();
+        _orm.CreateTable<GuidKeyRecord>();
+        _orm.CreateTable<ManualIntKey>();
+        _orm.CreateTable<ManualIntKeyChild>();
+
+        var generated = new NamedLongKey { Value = "before" };
+        _orm.Insert(generated);
+        Assert.True(generated.UserId > 0);
+        Assert.Contains("AUTOINCREMENT", GetTableSql(nameof(NamedLongKey)));
+
+        generated.Value = "after";
+        _orm.Update(generated);
+        Assert.Equal("after", _orm.Find<NamedLongKey, long>(generated.UserId)!.Value);
+        _orm.Delete<NamedLongKey, long>(generated.UserId);
+        Assert.Null(_orm.Find<NamedLongKey, long>(generated.UserId));
+
+        var guid = Guid.NewGuid();
+        _orm.Insert(new GuidKeyRecord { UserKey = guid, Value = "guid" });
+        Assert.Equal("guid", _orm.Find<GuidKeyRecord, Guid>(guid)!.Value);
+        Assert.DoesNotContain("AUTOINCREMENT", GetTableSql(nameof(GuidKeyRecord)));
+
+        _orm.Insert(new ManualIntKey { Code = 42, Value = "manual" });
+        Assert.Equal("manual", _orm.Find<ManualIntKey, int>(42)!.Value);
+        Assert.DoesNotContain("AUTOINCREMENT", GetTableSql(nameof(ManualIntKey)));
+        Assert.Contains(_orm.Query<ForeignKeyInfo>($"PRAGMA foreign_key_list(\"{nameof(ManualIntKeyChild)}\");"),
+            foreignKey => foreignKey.table == nameof(ManualIntKey) && foreignKey.to == nameof(ManualIntKey.Code));
+
+        var generatedBatch = new List<NamedLongKey> { new() { Value = "one" }, new() { Value = "two" } };
+        _orm.Insert(generatedBatch);
+        Assert.All(generatedBatch, item => Assert.True(item.UserId > 0));
+        Assert.NotEqual(generatedBatch[0].UserId, generatedBatch[1].UserId);
+    }
+
+    [Fact]
+    public void Native_upsert_supports_unique_and_primary_key_conflicts()
+    {
+        var unique = NewPerson("native@example.com", 10);
+        _orm.Upsert(unique, conflictOn: person => person.Name);
+        Assert.True(unique.Id > 0);
+        unique.Age = 11;
+        _orm.Upsert(unique, conflictOn: person => person.Name);
+        Assert.Equal(1, _orm.Count<Person>());
+        Assert.Equal(11, _orm.Find<Person, int>(unique.Id)!.Age);
+
+        var replacement = NewPerson("replacement@example.com", 12);
+        replacement.Id = unique.Id;
+        _orm.Upsert(replacement, conflictOn: person => person.Id);
+        Assert.Equal(1, _orm.Count<Person>());
+        Assert.Equal("replacement@example.com", _orm.Find<Person, int>(unique.Id)!.Name);
+
+        var command = UpsertCommandBuilder.Build(replacement, nameof(Person.Name));
+        Assert.Contains("ON CONFLICT (\"Name\") DO UPDATE", command.Sql);
+        Assert.DoesNotContain("SELECT", command.Sql);
+        Assert.DoesNotContain(replacement.Name, command.Sql);
+        Assert.Contains(replacement.Name, command.Parameters.Values);
+    }
+
+    [Fact]
+    public void Native_upsert_supports_non_id_manual_primary_keys_and_nullable_values()
+    {
+        _orm.CreateTable<ManualIntKey>();
+        var entity = new ManualIntKey { Code = 42, Value = "inserted" };
+        _orm.Upsert(entity);
+        entity.Value = "updated";
+        _orm.Upsert(entity);
+
+        Assert.Equal(1, _orm.Count<ManualIntKey>());
+        Assert.Equal("updated", _orm.Find<ManualIntKey, int>(42)!.Value);
+
+        _orm.CreateTable<NullableUniqueRecord>();
+        _orm.Upsert(new NullableUniqueRecord { Token = null, Value = "first" }, record => record.Token);
+        _orm.Upsert(new NullableUniqueRecord { Token = null, Value = "second" }, record => record.Token);
+        Assert.Equal(2, _orm.Count<NullableUniqueRecord>());
+    }
+
+    [Fact]
+    public void Native_upsert_is_atomic_when_update_violates_another_constraint()
+    {
+        _orm.CreateTable<AtomicUpsertRecord>();
+        _orm.Insert(new AtomicUpsertRecord { Email = "a@example.com", Username = "one" });
+        _orm.Insert(new AtomicUpsertRecord { Email = "b@example.com", Username = "two" });
+
+        Assert.Throws<SQLiteException>(() => _orm.Upsert(
+            new AtomicUpsertRecord { Email = "a@example.com", Username = "two" },
+            record => record.Email));
+
+        Assert.Equal(2, _orm.Count<AtomicUpsertRecord>());
+        Assert.Equal("one", _orm.FirstOrDefault<AtomicUpsertRecord>(record => record.Email == "a@example.com")!.Username);
+    }
+
+    private string GetTableSql(string tableName) => _orm.Query<TableSql>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = @name",
+        new() { ["@name"] = tableName }).Single().sql;
+
+    [Fact]
+    public void Entity_metadata_is_cached_and_resolves_mapping_rules()
+    {
+        var first = EntityMapCache.Get<MappedRecord>();
+        var second = EntityMapCache.Get<MappedRecord>();
+
+        Assert.Same(first, second);
+        Assert.Equal("mapped_records", first.TableName);
+        Assert.Equal(nameof(MappedRecord.Id), first.Key!.PropertyName);
+        Assert.True(first.Key.IsPrimaryKey);
+        Assert.True(first.Key.IsAutoGenerated);
+        Assert.Equal("display_name", first.GetProperty(nameof(MappedRecord.Name)).ColumnName);
+        Assert.Equal(typeof(string), first.GetProperty(nameof(MappedRecord.Name)).ClrType);
+        Assert.Equal("TEXT", first.GetProperty(nameof(MappedRecord.Name)).SqliteType);
+        Assert.True(first.GetProperty(nameof(MappedRecord.Nickname)).IsNullable);
+        Assert.False(first.GetProperty(nameof(MappedRecord.Name)).IsNullable);
+        Assert.True(first.GetProperty(nameof(MappedRecord.Name)).IsRequired);
+        Assert.DoesNotContain(first.Properties, p => p.PropertyName == nameof(MappedRecord.Ignored));
+    }
+
+    [Fact]
+    public void Supported_types_generate_correct_affinities_and_round_trip()
+    {
+        _orm.CreateTable<SupportedTypes>();
+        var columns = _orm.Query<ColumnInfo>($"PRAGMA table_info(\"{nameof(SupportedTypes)}\");")
+            .ToDictionary(column => column.name, column => column.type);
+
+        foreach (var name in new[] { nameof(SupportedTypes.Byte), nameof(SupportedTypes.Short), nameof(SupportedTypes.Int),
+                     nameof(SupportedTypes.Long), nameof(SupportedTypes.Bool), nameof(SupportedTypes.Enum),
+                     nameof(SupportedTypes.NullableByte), nameof(SupportedTypes.NullableShort), nameof(SupportedTypes.NullableInt),
+                     nameof(SupportedTypes.NullableLong), nameof(SupportedTypes.NullableEnum) })
+            Assert.Equal("INTEGER", columns[name]);
+        Assert.Equal("REAL", columns[nameof(SupportedTypes.Float)]);
+        Assert.Equal("REAL", columns[nameof(SupportedTypes.NullableDouble)]);
+        Assert.Equal("NUMERIC", columns[nameof(SupportedTypes.Decimal)]);
+        Assert.Equal("NUMERIC", columns[nameof(SupportedTypes.NullableDecimal)]);
+        Assert.Equal("BLOB", columns[nameof(SupportedTypes.Bytes)]);
+        Assert.Equal("TEXT", columns[nameof(SupportedTypes.Guid)]);
+        Assert.Equal("TEXT", columns[nameof(SupportedTypes.NullableDateTimeOffset)]);
+
+        var timestamp = new DateTime(2026, 8, 23, 10, 11, 12, DateTimeKind.Utc);
+        var offset = new DateTimeOffset(2026, 8, 23, 10, 11, 12, TimeSpan.FromHours(3.5));
+        var guid = Guid.NewGuid();
+        var value = new SupportedTypes
+        {
+            Byte = 200, Short = -1234, Int = -123456, Long = 9_000_000_000,
+            Float = 1.25f, Double = 2.5, Decimal = 12345.6789m, Bool = true,
+            String = "text", Bytes = new byte[] { 0, 1, 127, 255 }, DateTime = timestamp,
+            DateTimeOffset = offset, DateOnly = new DateOnly(2026, 8, 23), TimeOnly = new TimeOnly(10, 11, 12),
+            Guid = guid, Enum = PersonKind.Admin, NullableByte = 8, NullableShort = 9, NullableInt = 7,
+            NullableLong = 10, NullableFloat = 1.5f, NullableDouble = 8.5,
+            NullableDecimal = 9.75m, NullableBool = false, NullableDateTime = timestamp,
+            NullableDateTimeOffset = offset, NullableDateOnly = new DateOnly(2026, 1, 2),
+            NullableTimeOnly = new TimeOnly(3, 4, 5), NullableGuid = guid, NullableEnum = PersonKind.User
+        };
+        _orm.Insert(value);
+        var actual = _orm.Find<SupportedTypes, long>(value.RowKey)!;
+
+        Assert.Equal(value.Byte, actual.Byte); Assert.Equal(value.Short, actual.Short);
+        Assert.Equal(value.Int, actual.Int); Assert.Equal(value.Long, actual.Long);
+        Assert.Equal(value.Float, actual.Float); Assert.Equal(value.Double, actual.Double);
+        Assert.Equal(value.Decimal, actual.Decimal); Assert.Equal(value.Bool, actual.Bool);
+        Assert.Equal(value.String, actual.String); Assert.Equal(value.Bytes, actual.Bytes);
+        Assert.Equal(value.DateTime, actual.DateTime); Assert.Equal(value.DateTimeOffset, actual.DateTimeOffset);
+        Assert.Equal(value.DateOnly, actual.DateOnly); Assert.Equal(value.TimeOnly, actual.TimeOnly);
+        Assert.Equal(value.Guid, actual.Guid); Assert.Equal(value.Enum, actual.Enum);
+        Assert.Equal(value.NullableGuid, actual.NullableGuid); Assert.Equal(value.NullableEnum, actual.NullableEnum);
+
+        var nulls = new SupportedTypes();
+        _orm.Insert(nulls);
+        var nullResult = _orm.Find<SupportedTypes, long>(nulls.RowKey)!;
+        Assert.Null(nullResult.NullableByte); Assert.Null(nullResult.NullableShort);
+        Assert.Null(nullResult.NullableInt); Assert.Null(nullResult.NullableLong);
+        Assert.Null(nullResult.NullableFloat); Assert.Null(nullResult.NullableDouble);
+        Assert.Null(nullResult.NullableDecimal); Assert.Null(nullResult.NullableBool);
+        Assert.Null(nullResult.NullableDateTime); Assert.Null(nullResult.NullableDateTimeOffset);
+        Assert.Null(nullResult.NullableDateOnly); Assert.Null(nullResult.NullableTimeOnly);
+        Assert.Null(nullResult.NullableGuid); Assert.Null(nullResult.NullableEnum);
+
+        Assert.Equal(guid, _orm.ExecuteScalar<Guid>("SELECT @value", new() { ["@value"] = guid }));
+        Assert.True(_orm.Exists<SupportedTypes>(item => item.Enum, PersonKind.Admin));
     }
 
     public void Dispose()
     {
+        _orm.Dispose();
         SQLiteConnection.ClearAllPools();
         if (File.Exists(_databasePath)) File.Delete(_databasePath);
     }
@@ -318,12 +688,88 @@ public sealed class SqLiteOrmTests : IDisposable
     }
     private sealed class NoProperties { }
     private sealed class InvalidForeignKey { [Key] public int Id { get; set; } [ForeignKey("Person", OnDelete = "DROP")] public int PersonId { get; set; } }
-    private sealed class ColumnInfo { public string name { get; set; } = string.Empty; public int notnull { get; set; } public int pk { get; set; } }
+    private sealed class ColumnInfo { public string name { get; set; } = string.Empty; public string type { get; set; } = string.Empty; public int notnull { get; set; } public int pk { get; set; } }
     private sealed class IndexInfo { public int unique { get; set; } }
-    private sealed class ForeignKeyInfo { public string table { get; set; } = string.Empty; public string on_delete { get; set; } = string.Empty; public string on_update { get; set; } = string.Empty; }
+    private sealed class ForeignKeyInfo { public string table { get; set; } = string.Empty; public string to { get; set; } = string.Empty; public string on_delete { get; set; } = string.Empty; public string on_update { get; set; } = string.Empty; }
     private sealed class GuidProjection { public Guid Token { get; set; } }
     private sealed class NullableProjection { public string? Nickname { get; set; } public DateTime CreatedAt { get; set; } }
     private sealed class NaturalKeyRecord { public DateTime CreatedAt { get; set; } public string Value { get; set; } = string.Empty; }
     private sealed class InvalidKeyType { [Key] public Guid Id { get; set; } }
+    private sealed class NamedLongKey
+    {
+        [Key, AutoIncrement] public long UserId { get; set; }
+        public string Value { get; set; } = string.Empty;
+    }
+    private sealed class GuidKeyRecord
+    {
+        [Key] public Guid UserKey { get; set; }
+        public string Value { get; set; } = string.Empty;
+    }
+    private sealed class ManualIntKey
+    {
+        [Key] public int Code { get; set; }
+        public string Value { get; set; } = string.Empty;
+    }
+    private sealed class ManualIntKeyChild
+    {
+        [Key, AutoIncrement] public long ChildKey { get; set; }
+        [ForeignKey(nameof(ManualIntKey))] public int ParentCode { get; set; }
+    }
+    private sealed class TableSql { public string sql { get; set; } = string.Empty; }
+    private sealed class NullableUniqueRecord
+    {
+        [Key, AutoIncrement] public long RecordKey { get; set; }
+        [Unique] public string? Token { get; set; }
+        public string Value { get; set; } = string.Empty;
+    }
+    private sealed class AtomicUpsertRecord
+    {
+        [Key, AutoIncrement] public long RecordKey { get; set; }
+        [Unique] public string Email { get; set; } = string.Empty;
+        [Unique] public string Username { get; set; } = string.Empty;
+    }
+    private sealed class SupportedTypes
+    {
+        [Key, AutoIncrement] public long RowKey { get; set; }
+        public byte Byte { get; set; }
+        public short Short { get; set; }
+        public int Int { get; set; }
+        public long Long { get; set; }
+        public float Float { get; set; }
+        public double Double { get; set; }
+        public decimal Decimal { get; set; }
+        public bool Bool { get; set; }
+        public string? String { get; set; }
+        public byte[]? Bytes { get; set; }
+        public DateTime DateTime { get; set; }
+        public DateTimeOffset DateTimeOffset { get; set; }
+        public DateOnly DateOnly { get; set; }
+        public TimeOnly TimeOnly { get; set; }
+        public Guid Guid { get; set; }
+        public PersonKind Enum { get; set; }
+        public byte? NullableByte { get; set; }
+        public short? NullableShort { get; set; }
+        public int? NullableInt { get; set; }
+        public long? NullableLong { get; set; }
+        public float? NullableFloat { get; set; }
+        public double? NullableDouble { get; set; }
+        public decimal? NullableDecimal { get; set; }
+        public bool? NullableBool { get; set; }
+        public DateTime? NullableDateTime { get; set; }
+        public DateTimeOffset? NullableDateTimeOffset { get; set; }
+        public DateOnly? NullableDateOnly { get; set; }
+        public TimeOnly? NullableTimeOnly { get; set; }
+        public Guid? NullableGuid { get; set; }
+        public PersonKind? NullableEnum { get; set; }
+    }
+    [Table("mapped_records")]
+    private sealed class MappedRecord
+    {
+        [Key] public int Id { get; set; }
+        [Required, Column("display_name")] public string Name { get; set; } = string.Empty;
+        public string? Nickname { get; set; }
+        [NotMapped] public string? Ignored { get; set; }
+    }
     private enum PersonKind { User, Admin }
+    private sealed class TestTransactionException(string message) : Exception(message);
 }
