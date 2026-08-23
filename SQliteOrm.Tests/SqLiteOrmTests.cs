@@ -50,9 +50,9 @@ public sealed class SqLiteOrmTests : IDisposable
     {
         var ada = NewPerson("Ada", 31, true);
         var id = _orm.Insert(ada);
-        ada.Id = id;
 
         Assert.True(id > 0);
+        Assert.Equal(id, ada.Id);
         Assert.True(_orm.Exists<Person>(id));
         Assert.True(_orm.Exists<Person>(p => p.Name, "Ada"));
         Assert.Equal(1, _orm.Count<Person>());
@@ -282,10 +282,53 @@ public sealed class SqLiteOrmTests : IDisposable
     }
 
     [Fact]
-    public void CreateTable_rejects_a_non_integer_autoincrement_key()
+    public void CreateTable_allows_a_non_integer_manual_key()
     {
-        Assert.Throws<InvalidOperationException>(() => _orm.CreateTable<InvalidKeyType>());
+        _orm.CreateTable<InvalidKeyType>();
+        var key = Guid.NewGuid();
+        _orm.Insert(new InvalidKeyType { Id = key });
+        Assert.Equal(key, _orm.Find<InvalidKeyType, Guid>(key)!.Id);
     }
+
+    [Fact]
+    public void Primary_key_operations_are_metadata_driven()
+    {
+        _orm.CreateTable<NamedLongKey>();
+        _orm.CreateTable<GuidKeyRecord>();
+        _orm.CreateTable<ManualIntKey>();
+        _orm.CreateTable<ManualIntKeyChild>();
+
+        var generated = new NamedLongKey { Value = "before" };
+        _orm.Insert(generated);
+        Assert.True(generated.UserId > 0);
+        Assert.Contains("AUTOINCREMENT", GetTableSql(nameof(NamedLongKey)));
+
+        generated.Value = "after";
+        _orm.Update(generated);
+        Assert.Equal("after", _orm.Find<NamedLongKey, long>(generated.UserId)!.Value);
+        _orm.Delete<NamedLongKey, long>(generated.UserId);
+        Assert.Null(_orm.Find<NamedLongKey, long>(generated.UserId));
+
+        var guid = Guid.NewGuid();
+        _orm.Insert(new GuidKeyRecord { UserKey = guid, Value = "guid" });
+        Assert.Equal("guid", _orm.Find<GuidKeyRecord, Guid>(guid)!.Value);
+        Assert.DoesNotContain("AUTOINCREMENT", GetTableSql(nameof(GuidKeyRecord)));
+
+        _orm.Insert(new ManualIntKey { Code = 42, Value = "manual" });
+        Assert.Equal("manual", _orm.Find<ManualIntKey, int>(42)!.Value);
+        Assert.DoesNotContain("AUTOINCREMENT", GetTableSql(nameof(ManualIntKey)));
+        Assert.Contains(_orm.Query<ForeignKeyInfo>($"PRAGMA foreign_key_list(\"{nameof(ManualIntKeyChild)}\");"),
+            foreignKey => foreignKey.table == nameof(ManualIntKey) && foreignKey.to == nameof(ManualIntKey.Code));
+
+        var generatedBatch = new List<NamedLongKey> { new() { Value = "one" }, new() { Value = "two" } };
+        _orm.Insert(generatedBatch);
+        Assert.All(generatedBatch, item => Assert.True(item.UserId > 0));
+        Assert.NotEqual(generatedBatch[0].UserId, generatedBatch[1].UserId);
+    }
+
+    private string GetTableSql(string tableName) => _orm.Query<TableSql>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = @name",
+        new() { ["@name"] = tableName }).Single().sql;
 
     [Fact]
     public void Entity_metadata_is_cached_and_resolves_mapping_rules()
@@ -341,11 +384,32 @@ public sealed class SqLiteOrmTests : IDisposable
     private sealed class InvalidForeignKey { [Key] public int Id { get; set; } [ForeignKey("Person", OnDelete = "DROP")] public int PersonId { get; set; } }
     private sealed class ColumnInfo { public string name { get; set; } = string.Empty; public int notnull { get; set; } public int pk { get; set; } }
     private sealed class IndexInfo { public int unique { get; set; } }
-    private sealed class ForeignKeyInfo { public string table { get; set; } = string.Empty; public string on_delete { get; set; } = string.Empty; public string on_update { get; set; } = string.Empty; }
+    private sealed class ForeignKeyInfo { public string table { get; set; } = string.Empty; public string to { get; set; } = string.Empty; public string on_delete { get; set; } = string.Empty; public string on_update { get; set; } = string.Empty; }
     private sealed class GuidProjection { public Guid Token { get; set; } }
     private sealed class NullableProjection { public string? Nickname { get; set; } public DateTime CreatedAt { get; set; } }
     private sealed class NaturalKeyRecord { public DateTime CreatedAt { get; set; } public string Value { get; set; } = string.Empty; }
     private sealed class InvalidKeyType { [Key] public Guid Id { get; set; } }
+    private sealed class NamedLongKey
+    {
+        [Key, AutoIncrement] public long UserId { get; set; }
+        public string Value { get; set; } = string.Empty;
+    }
+    private sealed class GuidKeyRecord
+    {
+        [Key] public Guid UserKey { get; set; }
+        public string Value { get; set; } = string.Empty;
+    }
+    private sealed class ManualIntKey
+    {
+        [Key] public int Code { get; set; }
+        public string Value { get; set; } = string.Empty;
+    }
+    private sealed class ManualIntKeyChild
+    {
+        [Key, AutoIncrement] public long ChildKey { get; set; }
+        [ForeignKey(nameof(ManualIntKey))] public int ParentCode { get; set; }
+    }
+    private sealed class TableSql { public string sql { get; set; } = string.Empty; }
     [Table("mapped_records")]
     private sealed class MappedRecord
     {
