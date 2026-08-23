@@ -12,6 +12,9 @@ public sealed class SqliteTransactionSession
     public int Insert<T>(T entity) { EnsureActive(); return _orm.Insert(entity); }
     public void Insert<T>(List<T> entities) { EnsureActive(); _orm.Insert(entities); }
     public void Update<T>(T entity) { EnsureActive(); _orm.Update(entity); }
+    public void Upsert<T, TConflict>(T entity, Expression<Func<T, TConflict>> conflictOn) where T : new()
+    { EnsureActive(); _orm.Upsert(entity, conflictOn); }
+    public void Upsert<T>(T entity) where T : new() { EnsureActive(); _orm.Upsert(entity); }
     public int Delete<T>(Expression<Func<T, bool>> predicate) { EnsureActive(); return _orm.Delete(predicate); }
     public void Delete<T, TKey>(TKey key) { EnsureActive(); _orm.Delete<T, TKey>(key); }
     public SqliteQuery<T> Table<T>() where T : new() { EnsureActive(); return _orm.Table<T>(); }

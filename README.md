@@ -171,7 +171,7 @@ db.Transaction(tx =>
 
 The ORM opens one connection, begins one SQLite transaction, and binds every session operation to both. It commits only after the callback returns successfully. If any operation or the callback throws, it attempts rollback and rethrows the original exception. The transaction, connection, and commands are disposed afterward.
 
-The session supports `Insert`, bulk `Insert`, `Update`, strongly typed `Delete`, primary-key `Delete`, `Table<T>()`, raw `Query`, `ExecuteScalar`, and `Execute`. A session cannot be used after its callback ends.
+The session supports `Insert`, bulk `Insert`, `Update`, native `Upsert`, strongly typed `Delete`, primary-key `Delete`, `Table<T>()`, raw `Query`, `ExecuteScalar`, and `Execute`. A session cannot be used after its callback ends.
 
 Nested transactions are rejected with `InvalidOperationException`; they never create an independent inner transaction. Bulk insert uses this same infrastructure: outside a transaction it creates one transaction, while inside a transaction it reuses the active connection and transaction.
 
@@ -356,7 +356,7 @@ When using a custom key, that key is used in the `WHERE` clause and is not updat
 
 ### Upsert
 
-`Upsert` checks whether a record exists using the selected property. It inserts when no record exists; otherwise it updates it.
+`Upsert` executes one atomic SQLite `INSERT ... ON CONFLICT ... DO UPDATE` statement. The conflict target must be a mapped primary key or `[Unique]` property.
 
 ```csharp
 var user = new User
@@ -367,15 +367,21 @@ var user = new User
     CreatedAt = DateTime.UtcNow
 };
 
-db.Upsert<User>(u => u.Email, user);
+db.Upsert(user, conflictOn: u => u.Email);
 
 user.DisplayName = "Ada Lovelace";
-db.Upsert<User>(u => u.Email, user);
+db.Upsert(user, conflictOn: u => u.Email);
 ```
 
-SQL executed: each call first executes `SELECT 1 FROM "User" WHERE "Email" = @Email LIMIT 1;`, then executes either `INSERT INTO "User" (...) VALUES (...);` or `UPDATE "User" SET ... WHERE "Email" = @Email;`.
+SQL executed: `INSERT INTO "User" (...) VALUES (...) ON CONFLICT ("Email") DO UPDATE SET ... RETURNING "Id";`
 
-The selected upsert key must not be null.
+No preliminary existence query is executed. Values are parameters, generated and primary-key columns are not updated, and generated keys are returned to the entity. To use the mapped primary key as the target, call `db.Upsert(entity)`. SQLite treats `NULL` values in a unique column as distinct, so a nullable conflict target containing `null` normally inserts a new row.
+
+The older argument order remains available for compatibility:
+
+```csharp
+db.Upsert<User>(u => u.Email, user);
+```
 
 ### Delete
 
@@ -662,7 +668,7 @@ db.Insert(new List<Customer>
 });
 
 var item = new Customer { Email = "a@example.com", Name = "نسخه جدید" };
-db.Upsert<Customer>(c => c.Email, item);
+db.Upsert(item, conflictOn: c => c.Email);
 ```
 
 ## Transaction
@@ -679,7 +685,7 @@ db.Transaction(tx =>
 
 تمام عملیات callback از یک connection و transaction مشترک استفاده می‌کنند. در صورت خطا همه تغییرات rollback می‌شوند و nested transaction پشتیبانی نمی‌شود.
 
-در `Upsert` اگر رکوردی با ایمیل موردنظر وجود داشته باشد، به‌روزرسانی می‌شود؛ در غیر این صورت درج می‌شود.
+`Upsert` با یک دستور اتمیک `INSERT ... ON CONFLICT ... DO UPDATE` اجرا می‌شود و پیش از آن query جداگانه‌ای برای بررسی وجود رکورد اجرا نمی‌کند.
 
 ## فیلتر، مرتب‌سازی و صفحه‌بندی
 

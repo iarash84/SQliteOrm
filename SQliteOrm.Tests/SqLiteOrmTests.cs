@@ -4,6 +4,7 @@ using System.Linq.Expressions;
 using System.Data.SQLite;
 using SQliteOrm;
 using SQliteOrm.Mapping;
+using SQliteOrm.Persistence;
 
 [assembly: CollectionBehavior(DisableTestParallelization = true)]
 
@@ -449,7 +450,7 @@ public sealed class SqLiteOrmTests : IDisposable
         Assert.Throws<ArgumentException>(() => _orm.CreateTable<InvalidForeignKey>());
         Assert.Throws<InvalidOperationException>(() => _orm.GetAll<Person>(new() { [p => p.Age + 1] = 2 }));
         Assert.Throws<ArgumentException>(() => _orm.Delete<Person>(p => p.Age + 1, "1"));
-        Assert.Throws<ArgumentNullException>(() => _orm.Upsert<Person>(p => p.Id, NewPerson("invalid", 1)));
+        Assert.Throws<InvalidOperationException>(() => _orm.Upsert(NewPerson("invalid", 1), p => p.Age));
     }
 
     [Fact]
@@ -507,6 +508,63 @@ public sealed class SqLiteOrmTests : IDisposable
         _orm.Insert(generatedBatch);
         Assert.All(generatedBatch, item => Assert.True(item.UserId > 0));
         Assert.NotEqual(generatedBatch[0].UserId, generatedBatch[1].UserId);
+    }
+
+    [Fact]
+    public void Native_upsert_supports_unique_and_primary_key_conflicts()
+    {
+        var unique = NewPerson("native@example.com", 10);
+        _orm.Upsert(unique, conflictOn: person => person.Name);
+        Assert.True(unique.Id > 0);
+        unique.Age = 11;
+        _orm.Upsert(unique, conflictOn: person => person.Name);
+        Assert.Equal(1, _orm.Count<Person>());
+        Assert.Equal(11, _orm.Find<Person, int>(unique.Id)!.Age);
+
+        var replacement = NewPerson("replacement@example.com", 12);
+        replacement.Id = unique.Id;
+        _orm.Upsert(replacement, conflictOn: person => person.Id);
+        Assert.Equal(1, _orm.Count<Person>());
+        Assert.Equal("replacement@example.com", _orm.Find<Person, int>(unique.Id)!.Name);
+
+        var command = UpsertCommandBuilder.Build(replacement, nameof(Person.Name));
+        Assert.Contains("ON CONFLICT (\"Name\") DO UPDATE", command.Sql);
+        Assert.DoesNotContain("SELECT", command.Sql);
+        Assert.DoesNotContain(replacement.Name, command.Sql);
+        Assert.Contains(replacement.Name, command.Parameters.Values);
+    }
+
+    [Fact]
+    public void Native_upsert_supports_non_id_manual_primary_keys_and_nullable_values()
+    {
+        _orm.CreateTable<ManualIntKey>();
+        var entity = new ManualIntKey { Code = 42, Value = "inserted" };
+        _orm.Upsert(entity);
+        entity.Value = "updated";
+        _orm.Upsert(entity);
+
+        Assert.Equal(1, _orm.Count<ManualIntKey>());
+        Assert.Equal("updated", _orm.Find<ManualIntKey, int>(42)!.Value);
+
+        _orm.CreateTable<NullableUniqueRecord>();
+        _orm.Upsert(new NullableUniqueRecord { Token = null, Value = "first" }, record => record.Token);
+        _orm.Upsert(new NullableUniqueRecord { Token = null, Value = "second" }, record => record.Token);
+        Assert.Equal(2, _orm.Count<NullableUniqueRecord>());
+    }
+
+    [Fact]
+    public void Native_upsert_is_atomic_when_update_violates_another_constraint()
+    {
+        _orm.CreateTable<AtomicUpsertRecord>();
+        _orm.Insert(new AtomicUpsertRecord { Email = "a@example.com", Username = "one" });
+        _orm.Insert(new AtomicUpsertRecord { Email = "b@example.com", Username = "two" });
+
+        Assert.Throws<SQLiteException>(() => _orm.Upsert(
+            new AtomicUpsertRecord { Email = "a@example.com", Username = "two" },
+            record => record.Email));
+
+        Assert.Equal(2, _orm.Count<AtomicUpsertRecord>());
+        Assert.Equal("one", _orm.FirstOrDefault<AtomicUpsertRecord>(record => record.Email == "a@example.com")!.Username);
     }
 
     private string GetTableSql(string tableName) => _orm.Query<TableSql>(
@@ -656,6 +714,18 @@ public sealed class SqLiteOrmTests : IDisposable
         [ForeignKey(nameof(ManualIntKey))] public int ParentCode { get; set; }
     }
     private sealed class TableSql { public string sql { get; set; } = string.Empty; }
+    private sealed class NullableUniqueRecord
+    {
+        [Key, AutoIncrement] public long RecordKey { get; set; }
+        [Unique] public string? Token { get; set; }
+        public string Value { get; set; } = string.Empty;
+    }
+    private sealed class AtomicUpsertRecord
+    {
+        [Key, AutoIncrement] public long RecordKey { get; set; }
+        [Unique] public string Email { get; set; } = string.Empty;
+        [Unique] public string Username { get; set; } = string.Empty;
+    }
     private sealed class SupportedTypes
     {
         [Key, AutoIncrement] public long RowKey { get; set; }

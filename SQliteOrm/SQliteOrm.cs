@@ -13,6 +13,7 @@ using SQliteOrm.Mapping;
 using SQliteOrm.TypeMapping;
 using SQliteOrm.Querying;
 using SQliteOrm.Transactions;
+using SQliteOrm.Persistence;
 
 namespace SQliteOrm
 {
@@ -316,40 +317,28 @@ namespace SQliteOrm
         /// Upsert(myObject, o =&gt; o.Name);
         /// </code>
         /// </example>
-        public void Upsert<T>(Expression<Func<T, object>> keySelector, T obj) where T : new()
+        public void Upsert<T>(Expression<Func<T, object>> keySelector, T obj) where T : new() =>
+            Upsert(obj, keySelector);
+
+        /// <summary>Atomically inserts or updates an entity using a unique or primary-key conflict target.</summary>
+        public void Upsert<T, TConflict>(T obj, Expression<Func<T, TConflict>> conflictOn) where T : new()
         {
-            // Extract the column name from the lambda expression
-            var memberExpression = keySelector.Body as MemberExpression ??
-                                   (keySelector.Body as UnaryExpression)?.Operand as MemberExpression;
-
-            if (memberExpression == null)
+            ArgumentNullException.ThrowIfNull(obj);
+            ArgumentNullException.ThrowIfNull(conflictOn);
+            var conflictName = ExtractMemberName(conflictOn);
+            var command = UpsertCommandBuilder.Build(obj, conflictName);
+            if (command.GeneratedKey == null)
             {
-                throw new ArgumentNullException("Invalid column selector expression. Must be a property selector like 'o => o.Id'.");
+                ExecuteNonQueryAffected(command.Sql, command.Parameters);
+                return;
             }
-
-            var checkColumnName = memberExpression.Member.Name;
-            var map = EntityMapCache.Get<T>();
-            var checkColumnProperty = map.Properties.FirstOrDefault(p => !p.IsPrimaryKey &&
-                p.PropertyName.Equals(checkColumnName, StringComparison.OrdinalIgnoreCase));
-
-            if (checkColumnProperty == null)
-            {
-                throw new ArgumentNullException($"InsertOrUpdate requires a '{checkColumnName}' property.");
-            }
-
-            var checkColumnValue = checkColumnProperty.GetValue(obj!);
-
-            if (checkColumnValue == null)
-                throw new ArgumentException("The selected key value cannot be null.", nameof(obj));
-
-            lock (_writeLock)
-            { 
-                if (ExistsByValue<T>(checkColumnName, checkColumnValue))                
-                    Update(keySelector, obj);                
-                else                
-                    Insert(obj);                
-            }
+            var key = ExecuteScalar<long>(command.Sql, command.Parameters);
+            command.GeneratedKey.SetValue(obj!, SqliteTypeHandler.FromDatabase(key, command.GeneratedKey.ClrType));
         }
+
+        /// <summary>Atomically upserts an entity using its mapped primary key as the conflict target.</summary>
+        public void Upsert<T>(T obj) where T : new() =>
+            Upsert(obj, CreateKeySelector<T>(GetRequiredKey<T>().PropertyName));
 
 
         /// <summary>
@@ -1456,8 +1445,13 @@ namespace SQliteOrm
         {
             if (keySelector == null)
                 throw new ArgumentNullException(nameof(keySelector), "Key selector must be provided.");
+            return ExtractMemberName(keySelector);
+        }
 
-            return keySelector.Body switch
+        private static string ExtractMemberName<T, TMember>(Expression<Func<T, TMember>> selector)
+        {
+            ArgumentNullException.ThrowIfNull(selector);
+            return selector.Body switch
             {
                 // Extract the property name from a MemberExpression (direct property access)
                 MemberExpression memberExpression => memberExpression.Member.Name,
@@ -1466,7 +1460,7 @@ namespace SQliteOrm
                 UnaryExpression { Operand: MemberExpression unaryMemberExpression } => unaryMemberExpression.Member.Name,
 
                 // Throw exception for any invalid expression type
-                _ => throw new ArgumentException("Invalid key selector expression.", nameof(keySelector))
+                _ => throw new ArgumentException("Selector must directly reference a mapped property.", nameof(selector))
             };
         }
 
