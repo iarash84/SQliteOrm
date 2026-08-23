@@ -523,6 +523,14 @@ SQL executed: `SELECT COUNT(*) FROM "User" WHERE "IsActive" = @active`, `SELECT 
 - The relation APIs map the main entity; use `Query<T>` and a dedicated projection model for custom result shapes.
 - Create referenced tables before tables that declare foreign keys.
 
+## Query engine development status
+
+The project contains an internal, strongly typed predicate pipeline for future query API work. It translates `Expression<Func<T, bool>>` into a small query AST and then compiles that AST to parameterized SQLite SQL. Existing public query APIs are unchanged.
+
+The initial translator supports `==`, `!=`, `>`, `>=`, `<`, `<=`, `&&`, `||`, `!`, null equality checks, `string.Contains`, `string.StartsWith`, `string.EndsWith`, and collection `Contains` as `IN`. Column names are resolved through entity metadata, captured values become parameters, LIKE wildcard characters are escaped, and grouping is preserved.
+
+Arithmetic, arbitrary method calls, computed properties, navigation/member chains, string comparison overloads, and other expression nodes are intentionally unsupported. They raise `NotSupportedException` instead of being evaluated or inserted into SQL.
+
 ---
 
 # راهنمای فارسی
