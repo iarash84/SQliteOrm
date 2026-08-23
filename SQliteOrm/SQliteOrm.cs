@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.Data.SQLite;
 using System.Linq;
 using SQliteOrm.Mapping;
+using SQliteOrm.TypeMapping;
 
 namespace SQliteOrm
 {
@@ -217,7 +218,7 @@ namespace SQliteOrm
             var parameters = properties.ToDictionary(p => $"@{p.PropertyName}", p => p.GetValue(obj!) ?? DBNull.Value);
             var insertedId = ExecuteScalar<long>(query, parameters);
             if (map.Key is { IsDatabaseGenerated: true } generatedKey)
-                generatedKey.SetValue(obj!, ConvertDatabaseValue(insertedId, generatedKey.ClrType));
+                generatedKey.SetValue(obj!, SqliteTypeHandler.FromDatabase(insertedId, generatedKey.ClrType));
             return checked((int)insertedId);
         }
 
@@ -257,12 +258,12 @@ namespace SQliteOrm
                     {
                         if (obj == null) throw new ArgumentException("The list cannot contain null items.", nameof(objectList));
                         foreach (var property in properties)
-                            command.Parameters[$"@{property.PropertyName}"].Value = ToDatabaseValue(property.GetValue(obj!));
+                            command.Parameters[$"@{property.PropertyName}"].Value = SqliteTypeHandler.ToDatabase(property.GetValue(obj!));
                         command.ExecuteNonQuery();
                         if (generatedKeyCommand != null)
                         {
                             var insertedId = generatedKeyCommand.ExecuteScalar();
-                            map.Key!.SetValue(obj!, ConvertDatabaseValue(insertedId, map.Key.ClrType));
+                            map.Key!.SetValue(obj!, SqliteTypeHandler.FromDatabase(insertedId, map.Key.ClrType));
                         }
                     }
                     transaction.Commit();
@@ -342,7 +343,7 @@ namespace SQliteOrm
         /// </summary>
         /// <typeparam name="T">نوع شیء مورد نظر برای به‌روزرسانی</typeparam>
         /// <param name="keySelector">
-        /// عبارت لامبدا برای تعیین ستون کلید. به طور پیش‌فرض، ستون "Id" استفاده می‌شود.
+        /// عبارت لامبدا برای تعیین ستون کلید.
         /// به عنوان مثال: o => o.Id
         /// </param>
         /// <param name="obj">
@@ -416,7 +417,7 @@ namespace SQliteOrm
         /// </summary>
         /// <typeparam name="T">نوع موجودیت که باید یک کلاس جدید باشد.</typeparam>
         /// <param name="keyValue">مقدار کلید برای جستجو.</param>
-        /// <param name="keySelector">عبارت لامبدا برای مشخص کردن ستون کلید. اگر مقدار نداشته باشد، به طور پیش‌فرض "Id" استفاده می‌شود.</param>
+        /// <param name="keySelector">عبارت لامبدا برای مشخص کردن ستون کلید.</param>
         /// <exception cref="ArgumentNullException">اگر <paramref name="keySelector"/> مقدار <c>null</c> باشد.</exception>
         /// <exception cref="ArgumentException">اگر فرمت عبارت لامبدا نادرست باشد.</exception>
         public void Delete<T>(Expression<Func<T, object>> keySelector, string keyValue)
@@ -950,7 +951,7 @@ namespace SQliteOrm
         /// این متد یک رکورد را بر اساس یک مقدار کلید از پایگاه داده جستجو می‌کند.
         /// </summary>
         /// <typeparam name="T">نوع موجودیت که باید یک کلاس جدید باشد.</typeparam> 
-        /// <param name="keySelector">عبارت لامبدا برای مشخص کردن ستون کلید. اگر مقدار نداشته باشد، به طور پیش‌فرض "Id" استفاده می‌شود.</param>
+        /// <param name="keySelector">عبارت لامبدا برای مشخص کردن ستون کلید.</param>
         /// <param name="keyValue">مقدار کلید برای جستجو.</param>
         /// <returns>اولین رکوردی که با شرط تطابق دارد یا مقدار پیش‌فرض اگر رکوردی یافت نشد.</returns>
         /// <example>
@@ -1118,7 +1119,7 @@ namespace SQliteOrm
                     try
                     {
                         var dbValue = reader.GetValue(ordinal);
-                        property.SetValue(obj!, ConvertDatabaseValue(dbValue, property.ClrType));
+                        property.SetValue(obj!, SqliteTypeHandler.FromDatabase(dbValue, property.ClrType));
                     }
                     catch (Exception ex)
                     {
@@ -1187,7 +1188,7 @@ namespace SQliteOrm
             var result = command.ExecuteScalar();
             return (result == DBNull.Value || result == null) 
                 ? default 
-                : (T)ConvertDatabaseValue(result, typeof(T));
+                : (T)SqliteTypeHandler.FromDatabase(result, typeof(T));
         }
 
         /// <summary>
@@ -1279,16 +1280,8 @@ namespace SQliteOrm
         {
             if (parameters == null) return;
             foreach (var parameter in parameters)
-                command.Parameters.AddWithValue(parameter.Key, ToDatabaseValue(parameter.Value));
+                command.Parameters.AddWithValue(parameter.Key, SqliteTypeHandler.ToDatabase(parameter.Value));
         }
-
-        private static object ToDatabaseValue(object? value) => value switch
-        {
-            null => DBNull.Value,
-            Guid guid => guid.ToString("D"),
-            Enum enumValue => Convert.ToInt64(enumValue),
-            _ => value
-        };
 
         /// <summary>
         /// ویژگی‌های عمومی و نگاشت‌شونده یک نوع را از کش دریافت یا در آن ذخیره می‌کند.
@@ -1307,43 +1300,6 @@ namespace SQliteOrm
                 ? null
                 : new Dictionary<string, object> { [$"@{keyName}"] = keyValue };
             return ExecuteScalar<int>(query, parameters) > 0;
-        }
-
-        /// <summary>
-        /// مقدار خوانده‌شده از پایگاه داده را به نوع مقصد تبدیل می‌کند.
-        /// </summary>
-        /// <param name="value">مقدار خوانده‌شده از پایگاه داده.</param>
-        /// <param name="destinationType">نوع ویژگی مقصد.</param>
-        /// <returns>مقدار تبدیل‌شده و سازگار با نوع مقصد.</returns>
-        /// <exception cref="InvalidCastException">اگر مقدار قابل تبدیل به <see cref="Guid"/> نباشد، پرتاب می‌شود.</exception>
-        private static object ConvertDatabaseValue(object value, Type destinationType)
-        {
-            var targetType = Nullable.GetUnderlyingType(destinationType) ?? destinationType;
-            if (targetType.IsEnum)
-                return value is string text
-                    ? Enum.Parse(targetType, text, true)
-                    : Enum.ToObject(targetType, value);
-
-            if (targetType == typeof(Guid))
-            {
-                if (value is Guid guid)
-                    return guid;
-
-                if (value is byte[] guidBytes && guidBytes.Length == 16)
-                    return new Guid(guidBytes);
-
-                var guidText = Convert.ToString(value);
-
-                if (Guid.TryParse(guidText, out var parsedGuid))
-                    return parsedGuid;
-
-                throw new InvalidCastException(
-                    $"Cannot convert value '{value}' to Guid.");
-            }
-
-            if (targetType == typeof(bool) && value is long longValue)
-                return longValue != 0;
-            return Convert.ChangeType(value, targetType);
         }
 
         /// <summary>

@@ -350,6 +350,69 @@ public sealed class SqLiteOrmTests : IDisposable
         Assert.DoesNotContain(first.Properties, p => p.PropertyName == nameof(MappedRecord.Ignored));
     }
 
+    [Fact]
+    public void Supported_types_generate_correct_affinities_and_round_trip()
+    {
+        _orm.CreateTable<SupportedTypes>();
+        var columns = _orm.Query<ColumnInfo>($"PRAGMA table_info(\"{nameof(SupportedTypes)}\");")
+            .ToDictionary(column => column.name, column => column.type);
+
+        foreach (var name in new[] { nameof(SupportedTypes.Byte), nameof(SupportedTypes.Short), nameof(SupportedTypes.Int),
+                     nameof(SupportedTypes.Long), nameof(SupportedTypes.Bool), nameof(SupportedTypes.Enum),
+                     nameof(SupportedTypes.NullableByte), nameof(SupportedTypes.NullableShort), nameof(SupportedTypes.NullableInt),
+                     nameof(SupportedTypes.NullableLong), nameof(SupportedTypes.NullableEnum) })
+            Assert.Equal("INTEGER", columns[name]);
+        Assert.Equal("REAL", columns[nameof(SupportedTypes.Float)]);
+        Assert.Equal("REAL", columns[nameof(SupportedTypes.NullableDouble)]);
+        Assert.Equal("NUMERIC", columns[nameof(SupportedTypes.Decimal)]);
+        Assert.Equal("NUMERIC", columns[nameof(SupportedTypes.NullableDecimal)]);
+        Assert.Equal("BLOB", columns[nameof(SupportedTypes.Bytes)]);
+        Assert.Equal("TEXT", columns[nameof(SupportedTypes.Guid)]);
+        Assert.Equal("TEXT", columns[nameof(SupportedTypes.NullableDateTimeOffset)]);
+
+        var timestamp = new DateTime(2026, 8, 23, 10, 11, 12, DateTimeKind.Utc);
+        var offset = new DateTimeOffset(2026, 8, 23, 10, 11, 12, TimeSpan.FromHours(3.5));
+        var guid = Guid.NewGuid();
+        var value = new SupportedTypes
+        {
+            Byte = 200, Short = -1234, Int = -123456, Long = 9_000_000_000,
+            Float = 1.25f, Double = 2.5, Decimal = 12345.6789m, Bool = true,
+            String = "text", Bytes = new byte[] { 0, 1, 127, 255 }, DateTime = timestamp,
+            DateTimeOffset = offset, DateOnly = new DateOnly(2026, 8, 23), TimeOnly = new TimeOnly(10, 11, 12),
+            Guid = guid, Enum = PersonKind.Admin, NullableByte = 8, NullableShort = 9, NullableInt = 7,
+            NullableLong = 10, NullableFloat = 1.5f, NullableDouble = 8.5,
+            NullableDecimal = 9.75m, NullableBool = false, NullableDateTime = timestamp,
+            NullableDateTimeOffset = offset, NullableDateOnly = new DateOnly(2026, 1, 2),
+            NullableTimeOnly = new TimeOnly(3, 4, 5), NullableGuid = guid, NullableEnum = PersonKind.User
+        };
+        _orm.Insert(value);
+        var actual = _orm.Find<SupportedTypes, long>(value.RowKey)!;
+
+        Assert.Equal(value.Byte, actual.Byte); Assert.Equal(value.Short, actual.Short);
+        Assert.Equal(value.Int, actual.Int); Assert.Equal(value.Long, actual.Long);
+        Assert.Equal(value.Float, actual.Float); Assert.Equal(value.Double, actual.Double);
+        Assert.Equal(value.Decimal, actual.Decimal); Assert.Equal(value.Bool, actual.Bool);
+        Assert.Equal(value.String, actual.String); Assert.Equal(value.Bytes, actual.Bytes);
+        Assert.Equal(value.DateTime, actual.DateTime); Assert.Equal(value.DateTimeOffset, actual.DateTimeOffset);
+        Assert.Equal(value.DateOnly, actual.DateOnly); Assert.Equal(value.TimeOnly, actual.TimeOnly);
+        Assert.Equal(value.Guid, actual.Guid); Assert.Equal(value.Enum, actual.Enum);
+        Assert.Equal(value.NullableGuid, actual.NullableGuid); Assert.Equal(value.NullableEnum, actual.NullableEnum);
+
+        var nulls = new SupportedTypes();
+        _orm.Insert(nulls);
+        var nullResult = _orm.Find<SupportedTypes, long>(nulls.RowKey)!;
+        Assert.Null(nullResult.NullableByte); Assert.Null(nullResult.NullableShort);
+        Assert.Null(nullResult.NullableInt); Assert.Null(nullResult.NullableLong);
+        Assert.Null(nullResult.NullableFloat); Assert.Null(nullResult.NullableDouble);
+        Assert.Null(nullResult.NullableDecimal); Assert.Null(nullResult.NullableBool);
+        Assert.Null(nullResult.NullableDateTime); Assert.Null(nullResult.NullableDateTimeOffset);
+        Assert.Null(nullResult.NullableDateOnly); Assert.Null(nullResult.NullableTimeOnly);
+        Assert.Null(nullResult.NullableGuid); Assert.Null(nullResult.NullableEnum);
+
+        Assert.Equal(guid, _orm.ExecuteScalar<Guid>("SELECT @value", new() { ["@value"] = guid }));
+        Assert.True(_orm.Exists<SupportedTypes>(item => item.Enum, PersonKind.Admin));
+    }
+
     public void Dispose()
     {
         SQLiteConnection.ClearAllPools();
@@ -382,7 +445,7 @@ public sealed class SqLiteOrmTests : IDisposable
     }
     private sealed class NoProperties { }
     private sealed class InvalidForeignKey { [Key] public int Id { get; set; } [ForeignKey("Person", OnDelete = "DROP")] public int PersonId { get; set; } }
-    private sealed class ColumnInfo { public string name { get; set; } = string.Empty; public int notnull { get; set; } public int pk { get; set; } }
+    private sealed class ColumnInfo { public string name { get; set; } = string.Empty; public string type { get; set; } = string.Empty; public int notnull { get; set; } public int pk { get; set; } }
     private sealed class IndexInfo { public int unique { get; set; } }
     private sealed class ForeignKeyInfo { public string table { get; set; } = string.Empty; public string to { get; set; } = string.Empty; public string on_delete { get; set; } = string.Empty; public string on_update { get; set; } = string.Empty; }
     private sealed class GuidProjection { public Guid Token { get; set; } }
@@ -410,6 +473,40 @@ public sealed class SqLiteOrmTests : IDisposable
         [ForeignKey(nameof(ManualIntKey))] public int ParentCode { get; set; }
     }
     private sealed class TableSql { public string sql { get; set; } = string.Empty; }
+    private sealed class SupportedTypes
+    {
+        [Key, AutoIncrement] public long RowKey { get; set; }
+        public byte Byte { get; set; }
+        public short Short { get; set; }
+        public int Int { get; set; }
+        public long Long { get; set; }
+        public float Float { get; set; }
+        public double Double { get; set; }
+        public decimal Decimal { get; set; }
+        public bool Bool { get; set; }
+        public string? String { get; set; }
+        public byte[]? Bytes { get; set; }
+        public DateTime DateTime { get; set; }
+        public DateTimeOffset DateTimeOffset { get; set; }
+        public DateOnly DateOnly { get; set; }
+        public TimeOnly TimeOnly { get; set; }
+        public Guid Guid { get; set; }
+        public PersonKind Enum { get; set; }
+        public byte? NullableByte { get; set; }
+        public short? NullableShort { get; set; }
+        public int? NullableInt { get; set; }
+        public long? NullableLong { get; set; }
+        public float? NullableFloat { get; set; }
+        public double? NullableDouble { get; set; }
+        public decimal? NullableDecimal { get; set; }
+        public bool? NullableBool { get; set; }
+        public DateTime? NullableDateTime { get; set; }
+        public DateTimeOffset? NullableDateTimeOffset { get; set; }
+        public DateOnly? NullableDateOnly { get; set; }
+        public TimeOnly? NullableTimeOnly { get; set; }
+        public Guid? NullableGuid { get; set; }
+        public PersonKind? NullableEnum { get; set; }
+    }
     [Table("mapped_records")]
     private sealed class MappedRecord
     {

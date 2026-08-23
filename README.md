@@ -55,7 +55,7 @@ Calling `SqLiteOrm.Instance` before `Initialize` throws `InvalidOperationExcepti
 
 ## Define a model
 
-The table name is the C# class name, and the column name is the property name. Public properties are mapped unless they have `[NotMapped]`.
+By default, the table name is the C# class name and the column name is the property name. `[Table]` and `[Column]` override those names. Public readable properties are mapped unless they have `[NotMapped]`.
 
 ```csharp
 public enum UserRole
@@ -85,7 +85,7 @@ public sealed class User
 }
 ```
 
-`[Key]` creates an `INTEGER PRIMARY KEY AUTOINCREMENT` column. For automatic IDs, use an `int` key. `[Required]` creates `NOT NULL`, and `[Unique]` creates `UNIQUE`.
+`[Key]` identifies the primary key independently of its property name. Add `[AutoIncrement]` to an `int` or `long` key when SQLite should generate it. For backward compatibility, an `int` or `long` key named `Id` also uses auto-increment by convention. `[Required]` creates `NOT NULL`, and `[Unique]` creates `UNIQUE`.
 
 ## Create tables
 
@@ -125,13 +125,13 @@ var user = new User
     Role = UserRole.Admin
 };
 
-user.Id = db.Insert(user);
+db.Insert(user);
 Console.WriteLine(user.Id);
 ```
 
 SQL executed: `INSERT INTO "User" ("Email", "DisplayName", "IsActive", "Credit", "CreatedAt", "Role", "Nickname") VALUES (@Email, @DisplayName, @IsActive, @Credit, @CreatedAt, @Role, @Nickname); SELECT last_insert_rowid();`
 
-The `[Key]` and `[NotMapped]` properties are excluded from the insert statement.
+Database-generated keys and `[NotMapped]` properties are excluded from the insert statement. Manually assigned keys, including `Guid` keys, are inserted normally. Generated integer keys are written back to the entity. The legacy `int` return value is the SQLite row ID.
 
 ### Insert many records
 
@@ -151,7 +151,7 @@ Do not include null elements in the list; that raises `ArgumentException`.
 
 ## Read records
 
-### Get a record by ID
+### Get a record by primary key
 
 ```csharp
 User? user = db.FindById<User>(42);
@@ -161,6 +161,12 @@ if (user is not null)
 ```
 
 SQL executed: `SELECT * FROM "User" WHERE "Id" = @Id;`
+
+For any primary-key type or property name, use the metadata-driven overload:
+
+```csharp
+User? user = db.Find<User, Guid>(userKey);
+```
 
 ### Find one record by a column
 
@@ -271,9 +277,9 @@ SQL executed: `SELECT COUNT(*) FROM "User";`, `SELECT COUNT(*) FROM "User" WHERE
 
 ## Update, upsert, and delete
 
-### Update by `Id`
+### Update by primary key
 
-`Update(obj)` uses the `Id` property as its key. It updates mapped properties other than the key.
+`Update(obj)` uses the property marked `[Key]`. It updates mapped properties other than that key.
 
 ```csharp
 var user = db.FindById<User>(42);
@@ -331,7 +337,8 @@ The selected upsert key must not be null.
 ### Delete
 
 ```csharp
-db.Delete<User>(42);                         // Delete by Id
+db.Delete<User>(42);                         // Legacy int-key overload
+db.Delete<User, Guid>(userKey);              // Any mapped primary-key type
 db.Delete<User>(u => u.Email, "old@example.com"); // Delete by another column
 ```
 
@@ -492,14 +499,19 @@ SQL executed: `SELECT COUNT(*) FROM "User" WHERE "IsActive" = @active`, `SELECT 
 
 | Attribute / type | Behavior |
 | --- | --- |
-| `[Key]` | Primary key with auto-increment behavior. |
+| `[Key]` | Marks the primary key; the property name and type are not restricted to `Id` or integers. |
+| `[AutoIncrement]` | Makes an `int` or `long` primary key SQLite-generated with `AUTOINCREMENT`. |
 | `[Required]` | Adds `NOT NULL`. |
 | `[Unique]` | Adds `UNIQUE`. |
 | `[NotMapped]` | Excludes the property from table mapping. |
-| `[ForeignKey("TableName")]` | Adds a foreign-key constraint that references `Id` on the related table. |
-| `int`, `long`, `bool` | Stored as SQLite `INTEGER`. |
+| `[Table]`, `[Column]` | Override the default table or column name. |
+| `[ForeignKey("TableName")]` | Adds a foreign-key constraint; mapped related types use their actual `[Key]` column. |
+| `byte`, `short`, `int`, `long`, `bool`, enums | Stored as SQLite `INTEGER`. |
 | `double`, `float` | Stored as SQLite `REAL`. |
-| `string`, `DateTime`, enums, `Guid` | Stored/read as text-compatible values. |
+| `decimal` | Stored with SQLite `NUMERIC` affinity. |
+| `byte[]` | Stored as SQLite `BLOB`. |
+| `string`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `Guid` | Stored as SQLite `TEXT`; temporal values use invariant round-trip formats. |
+| `Nullable<T>` | Uses the same affinity and conversion as `T`; database `NULL` materializes as `null`. |
 
 ## Common mistakes
 
@@ -507,7 +519,7 @@ SQL executed: `SELECT COUNT(*) FROM "User" WHERE "IsActive" = @active`, `SELECT 
 - Call `CreateTable<T>()` before using a model's table.
 - Use only property access expressions such as `u => u.Email`; expressions such as `u => u.Credit + 1` are not supported as filters or keys.
 - Use `@parameterName` placeholders with `Query`, `ExecuteNonQuery`, and `ExecuteScalar` instead of string interpolation.
-- Set the returned ID after `Insert` if you intend to call `Update(obj)` later.
+- Mark generated integer keys with `[AutoIncrement]`; `Insert` writes generated values back to entities automatically.
 - The relation APIs map the main entity; use `Query<T>` and a dedicated projection model for custom result shapes.
 - Create referenced tables before tables that declare foreign keys.
 
