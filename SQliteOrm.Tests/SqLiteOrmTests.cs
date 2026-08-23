@@ -157,6 +157,52 @@ public sealed class SqLiteOrmTests : IDisposable
     }
 
     [Fact]
+    public void Strongly_typed_query_executes_terminal_operations()
+    {
+        _orm.Insert(new List<Person>
+        {
+            NewPerson("Minor", 17, true),
+            NewPerson("Adult", 20, true),
+            NewPerson("Inactive", 30, false)
+        });
+
+        var adults = _orm.Table<Person>()
+            .Where(person => person.Active)
+            .Where(person => person.Age >= 18);
+
+        Assert.Equal("Adult", Assert.Single(adults.ToList()).Name);
+        Assert.Equal("Adult", adults.First().Name);
+        Assert.Equal("Adult", adults.FirstOrDefault()!.Name);
+        Assert.Equal("Adult", adults.Single().Name);
+        Assert.Equal("Adult", adults.SingleOrDefault()!.Name);
+        Assert.True(adults.Any());
+        Assert.Equal(1, adults.Count());
+        Assert.True(_orm.Any<Person>(person => person.Name == "Adult"));
+        Assert.Equal(2, _orm.Count<Person>(person => person.Active));
+        Assert.Equal("Adult", _orm.FirstOrDefault<Person>(person => person.Age == 20)!.Name);
+    }
+
+    [Fact]
+    public void Strongly_typed_query_has_correct_terminal_semantics_and_is_deferred()
+    {
+        var deferred = _orm.Table<Person>().Where(person => person.Age + 1 > 18);
+        Assert.Throws<NotSupportedException>(() => deferred.ToList());
+
+        Assert.Null(_orm.Table<Person>().Where(person => person.Name == "missing").FirstOrDefault());
+        Assert.Null(_orm.Table<Person>().Where(person => person.Name == "missing").SingleOrDefault());
+        Assert.Throws<InvalidOperationException>(() => _orm.Table<Person>().First());
+
+        _orm.Insert(new List<Person> { NewPerson("One", 1), NewPerson("Two", 2) });
+        Assert.Throws<InvalidOperationException>(() => _orm.Table<Person>().Single());
+        Assert.Throws<InvalidOperationException>(() => _orm.Table<Person>().SingleOrDefault());
+
+        var command = _orm.Table<Person>().Where(person => person.Name == "Robert'); DROP TABLE Person;--").BuildSelect(1);
+        Assert.EndsWith(" LIMIT 1;", command.Sql);
+        Assert.DoesNotContain("DROP TABLE", command.Sql);
+        Assert.Single(command.Parameters!);
+    }
+
+    [Fact]
     public void Relation_queries_return_main_entities_and_accept_filters()
     {
         var customerId = _orm.Insert(new Customer { Name = "Contoso" });

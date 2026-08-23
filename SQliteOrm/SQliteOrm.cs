@@ -71,6 +71,18 @@ namespace SQliteOrm
         /// </summary>
         private readonly object _writeLock = new();
 
+        /// <summary>Starts a deferred, strongly typed query for <typeparamref name="T"/>.</summary>
+        public SqliteQuery<T> Table<T>() where T : new() => new(this);
+
+        /// <summary>Returns the first entity matching a strongly typed predicate, or the default value.</summary>
+        public T? FirstOrDefault<T>(Expression<Func<T, bool>> predicate) where T : new() =>
+            Table<T>().Where(predicate).FirstOrDefault();
+
+        /// <summary>Determines whether any entity matches a strongly typed predicate.</summary>
+        public bool Any<T>(Expression<Func<T, bool>> predicate) where T : new() =>
+            Table<T>().Where(predicate).Any();
+
+
 
         /// <summary>
         /// نمونه مقداردهی‌شده <see cref="SqLiteOrm"/> را بازمی‌گرداند.
@@ -1014,7 +1026,11 @@ namespace SQliteOrm
         /// </summary>
         /// <typeparam name="T">نوع داده‌ای که در جدول موجود است</typeparam>
         /// <returns>تعداد رکوردهای موجود در جدول</returns>
-        public int Count<T>(Dictionary<Expression<Func<T, object>>, object> conditions, LogicalOperator conditionType = LogicalOperator.And)
+        public int Count<T>(Dictionary<Expression<Func<T, object>>, object> conditions) where T : new() =>
+            Count(conditions, LogicalOperator.And);
+
+        /// <summary>Counts records using the legacy dictionary-based condition API.</summary>
+        public int Count<T>(Dictionary<Expression<Func<T, object>>, object> conditions, LogicalOperator conditionType)
             where T : new()
         {
             ValidateType<T>();

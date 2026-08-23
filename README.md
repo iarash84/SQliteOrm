@@ -12,6 +12,7 @@
 - [Define a model](#define-a-model)
 - [Create tables](#create-tables)
 - [Create records](#create-records)
+- [Strongly typed queries](#strongly-typed-queries)
 - [Read records](#read-records)
 - [Update, upsert, and delete](#update-upsert-and-delete)
 - [Relationships and joins](#relationships-and-joins)
@@ -74,6 +75,7 @@ public sealed class User
     public string Email { get; set; } = string.Empty;
 
     public string DisplayName { get; set; } = string.Empty;
+    public int Age { get; set; }
     public bool IsActive { get; set; }
     public double Credit { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -149,6 +151,39 @@ SQL executed: `INSERT INTO "User" (...) VALUES (...);` once per item, inside one
 
 Do not include null elements in the list; that raises `ArgumentException`.
 
+## Strongly typed queries
+
+`Table<T>()` is the recommended query API. It builds query state without accessing the database; SQL executes only when a terminal method is called.
+
+```csharp
+List<User> users = db.Table<User>()
+    .Where(user => user.IsActive)
+    .Where(user => user.Credit >= 100)
+    .ToList();
+```
+
+SQL executed: `SELECT * FROM "User" WHERE (("IsActive" = @p0) AND ("Credit" >= @p1));`
+
+Multiple `Where` calls are combined with `AND`. Supported terminal methods are `ToList`, `First`, `FirstOrDefault`, `Single`, `SingleOrDefault`, `Any`, and `Count`. `First` and `FirstOrDefault` use `LIMIT 1`; `Single` reads at most two rows; `Any` uses `EXISTS`; and `Count` executes `COUNT(*)` in SQLite.
+
+Runtime values, including captured variables, are always parameters:
+
+```csharp
+var minimumAge = 18;
+var adults = db.Table<User>()
+    .Where(user => user.IsActive && user.Age >= minimumAge)
+    .ToList();
+```
+
+The predicate DSL supports comparisons, boolean operators, null checks, `string.Contains`, `StartsWith`, `EndsWith`, and collection membership:
+
+```csharp
+var ids = new[] { 1, 4, 9 };
+var selected = db.Table<User>()
+    .Where(user => ids.Contains(user.Id) && user.Email.StartsWith("admin"))
+    .ToList();
+```
+
 ## Read records
 
 ### Get a record by primary key
@@ -171,77 +206,66 @@ User? user = db.Find<User, Guid>(userKey);
 ### Find one record by a column
 
 ```csharp
-User? user = db.FindOneByKey<User>(u => u.Email, "ada@example.com");
+User? user = db.FirstOrDefault<User>(u => u.Email == "ada@example.com");
 ```
 
-SQL executed: `SELECT * FROM "User" WHERE "Email" = @Email;`
+SQL executed: `SELECT * FROM "User" WHERE ("Email" = @p0) LIMIT 1;`
 
 ### Find one record with multiple conditions
 
-The default condition operator is `LogicalOperator.And`.
-
 ```csharp
-User? admin = db.FindOneByKey<User>(new()
-{
-    [u => u.IsActive] = true,
-    [u => u.Role] = UserRole.Admin
-});
+User? admin = db.Table<User>()
+    .Where(u => u.IsActive && u.Role == UserRole.Admin)
+    .FirstOrDefault();
 ```
 
-SQL executed: `SELECT * FROM "User" WHERE "IsActive" = @IsActive AND "Role" = @Role;`
+SQL executed: `SELECT * FROM "User" WHERE (("IsActive" = @p0) AND ("Role" = @p1)) LIMIT 1;`
 
 ### Get all records
 
 ```csharp
-List<User> users = db.GetAll<User>();
+List<User> users = db.Table<User>().ToList();
 ```
 
 SQL executed: `SELECT * FROM "User";`
 
 ### Filter records
 
-Use property-selector expressions as dictionary keys. This keeps column names refactor-safe.
+Use a boolean expression to compose conditions with normal C# operators.
 
 ```csharp
-var activeAdmins = db.GetAll<User>(new()
-{
-    [u => u.IsActive] = true,
-    [u => u.Role] = UserRole.Admin
-});
+var activeAdmins = db.Table<User>()
+    .Where(u => u.IsActive && u.Role == UserRole.Admin)
+    .ToList();
 ```
 
-SQL executed: `SELECT * FROM "User" WHERE "IsActive" = @IsActive AND "Role" = @Role;`
+SQL executed: `SELECT * FROM "User" WHERE (("IsActive" = @p0) AND ("Role" = @p1));`
 
-Use `LogicalOperator.Or` to match either condition:
+Use `||` to match either condition:
 
 ```csharp
-var selectedUsers = db.GetAll<User>(
-    new()
-    {
-        [u => u.Email] = "ada@example.com",
-        [u => u.DisplayName] = "Grace"
-    },
-    conditionType: LogicalOperator.Or);
+var selectedUsers = db.Table<User>()
+    .Where(u => u.Email == "ada@example.com" || u.DisplayName == "Grace")
+    .ToList();
 ```
 
-SQL executed: `SELECT * FROM "User" WHERE "Email" = @Email OR "DisplayName" = @DisplayName;`
-
-Use the type-safe `LogicalOperator.And` and `LogicalOperator.Or` values to combine conditions.
+SQL executed: `SELECT * FROM "User" WHERE (("Email" = @p0) OR ("DisplayName" = @p1));`
 
 ### Query nullable columns
 
 Passing `null` creates an `IS NULL` condition instead of `= NULL`.
 
 ```csharp
-var anonymousUsers = db.GetAll<User>(new()
-{
-    [u => u.Nickname!] = null!
-});
+var anonymousUsers = db.Table<User>()
+    .Where(u => u.Nickname == null)
+    .ToList();
 ```
 
 SQL executed: `SELECT * FROM "User" WHERE "Nickname" IS NULL;`
 
 ### Sort, limit, and offset
+
+Ordering and pagination currently remain on the legacy `GetAll` API until equivalent fluent operators are introduced:
 
 ```csharp
 var page = db.GetAll<User>(
@@ -264,16 +288,13 @@ SQL executed: `SELECT * FROM "User" WHERE "IsActive" = @IsActive ORDER BY "Creat
 ```csharp
 int totalUsers = db.Count<User>();
 
-int activeUsers = db.Count<User>(new()
-{
-    [u => u.IsActive] = true
-});
+int activeUsers = db.Count<User>(u => u.IsActive);
 
 bool existsById = db.Exists<User>(42);
-bool existsByEmail = db.Exists<User>(u => u.Email, "ada@example.com");
+bool existsByEmail = db.Any<User>(u => u.Email == "ada@example.com");
 ```
 
-SQL executed: `SELECT COUNT(*) FROM "User";`, `SELECT COUNT(*) FROM "User" WHERE "IsActive" = @IsActive;`, `SELECT 1 FROM "User" WHERE "Id" = @Id LIMIT 1;`, and `SELECT 1 FROM "User" WHERE "Email" = @Email LIMIT 1;`.
+SQL executed: `SELECT COUNT(*) FROM "User";`, `SELECT COUNT(*) FROM "User" WHERE ("IsActive" = @p0);`, `SELECT 1 FROM "User" WHERE "Id" = @Id LIMIT 1;`, and `SELECT EXISTS(SELECT 1 FROM "User" WHERE ("Email" = @p0) LIMIT 1);`.
 
 ## Update, upsert, and delete
 
@@ -517,15 +538,15 @@ SQL executed: `SELECT COUNT(*) FROM "User" WHERE "IsActive" = @active`, `SELECT 
 
 - Call `Initialize` once before `Instance`.
 - Call `CreateTable<T>()` before using a model's table.
-- Use only property access expressions such as `u => u.Email`; expressions such as `u => u.Credit + 1` are not supported as filters or keys.
+- Strongly typed predicates support mapped properties, comparisons, boolean composition, null checks, supported string methods, and collection `Contains`; computed arithmetic and arbitrary method calls are rejected.
 - Use `@parameterName` placeholders with `Query`, `ExecuteNonQuery`, and `ExecuteScalar` instead of string interpolation.
 - Mark generated integer keys with `[AutoIncrement]`; `Insert` writes generated values back to entities automatically.
 - The relation APIs map the main entity; use `Query<T>` and a dedicated projection model for custom result shapes.
 - Create referenced tables before tables that declare foreign keys.
 
-## Query engine development status
+## Predicate support and limitations
 
-The project contains an internal, strongly typed predicate pipeline for future query API work. It translates `Expression<Func<T, bool>>` into a small query AST and then compiles that AST to parameterized SQLite SQL. Existing public query APIs are unchanged.
+The strongly typed public query API is backed by an internal predicate pipeline. It translates `Expression<Func<T, bool>>` into a small query AST and then compiles that AST to parameterized SQLite SQL. The older dictionary-based methods remain available for source compatibility but are no longer the recommended query style.
 
 The initial translator supports `==`, `!=`, `>`, `>=`, `<`, `<=`, `&&`, `||`, `!`, null equality checks, `string.Contains`, `string.StartsWith`, `string.EndsWith`, and collection `Contains` as `IN`. Column names are resolved through entity metadata, captured values become parameters, LIKE wildcard characters are escaped, and grouping is preserved.
 
@@ -582,7 +603,7 @@ var customer = new Customer
 customer.Id = db.Insert(customer);             // درج و دریافت Id
 
 Customer? found = db.FindById<Customer>(customer.Id);
-Customer? byEmail = db.FindOneByKey<Customer>(c => c.Email, "ali@example.com");
+Customer? byEmail = db.FirstOrDefault<Customer>(c => c.Email == "ali@example.com");
 
 customer.Name = "Ali Rezaei";
 db.Update(customer);                           // ویرایش بر اساس Id
@@ -609,10 +630,9 @@ db.Upsert<Customer>(c => c.Email, item);
 ## فیلتر، مرتب‌سازی و صفحه‌بندی
 
 ```csharp
-var activeCustomers = db.GetAll<Customer>(new()
-{
-    [c => c.IsActive] = true
-});
+var activeCustomers = db.Table<Customer>()
+    .Where(c => c.IsActive)
+    .ToList();
 
 var results = db.GetAll<Customer>(
     conditions: new()
@@ -629,17 +649,16 @@ var results = db.GetAll<Customer>(
 برای مقدار `null` از شرط `IS NULL` استفاده می‌شود:
 
 ```csharp
-var noExtraValue = db.GetAll<Customer>(new()
-{
-    [c => c.Nickname!] = null!
-});
+var noExtraValue = db.Table<Customer>()
+    .Where(c => c.Nickname == null)
+    .ToList();
 ```
 
 ## شمارش و بررسی وجود
 
 ```csharp
 int allCount = db.Count<Customer>();
-int activeCount = db.Count<Customer>(new() { [c => c.IsActive] = true });
+int activeCount = db.Count<Customer>(c => c.IsActive);
 bool exists = db.Exists<Customer>(c => c.Email, "ali@example.com");
 ```
 
