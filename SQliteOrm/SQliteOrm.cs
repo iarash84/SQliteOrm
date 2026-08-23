@@ -168,6 +168,9 @@ namespace SQliteOrm
         /// <summary>Starts a deferred, strongly typed query for <typeparamref name="T"/>.</summary>
         public SqliteQuery<T> Table<T>() where T : new() => new(this);
 
+        /// <summary>Starts a strongly typed, parameterized partial update.</summary>
+        public SqliteUpdate<T> Update<T>() => new(this);
+
         /// <summary>Returns the first entity matching a strongly typed predicate, or the default value.</summary>
         public T? FirstOrDefault<T>(Expression<Func<T, bool>> predicate) where T : new() =>
             Table<T>().Where(predicate).FirstOrDefault();

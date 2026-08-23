@@ -445,6 +445,23 @@ SQL executed: `UPDATE "User" SET "DisplayName" = @DisplayName, ... WHERE "Email"
 
 When using a custom key, that key is used in the `WHERE` clause and is not updated.
 
+### Partial update
+
+Use the strongly typed update builder to change selected columns without loading entities first:
+
+```csharp
+var cutoff = DateTime.UtcNow.AddMonths(-6);
+int affected = db.Update<User>()
+    .Set(user => user.IsActive, false)
+    .Set(user => user.Nickname, null)
+    .Where(user => user.LastLogin < cutoff && user.Role != UserRole.Admin)
+    .Execute();
+```
+
+SQL executed: `UPDATE "User" SET "IsActive" = @set0, "Nickname" = @set1 WHERE (("LastLogin" < @p0) AND ("Role" <> @p1));`.
+
+`Set` accepts only a directly selected mapped property. Values and predicate captures are always SQLite parameters and use the centralized type conversion. At least one `Set` and one `Where` are required; this API deliberately has no implicit full-table update. Multiple `Where` calls are combined with `AND`. Database-generated properties, including auto-increment keys, cannot be modified. `Execute()` returns the number of affected rows.
+
 ### Upsert
 
 `Upsert` executes one atomic SQLite `INSERT ... ON CONFLICT ... DO UPDATE` statement. The conflict target must be a mapped primary key or `[Unique]` property.
@@ -790,6 +807,18 @@ db.Update(customer);                           // ویرایش بر اساس Id
 db.Delete<Customer>(customer.Id);              // حذف بر اساس Id
 db.Delete<Customer>(c => c.Email, "ali@example.com"); // حذف با ستون دلخواه
 ```
+
+برای ویرایش چند ستون بدون خواندن مدل، از partial update نوع‌امن استفاده کنید:
+
+```csharp
+int affected = db.Update<Customer>()
+    .Set(c => c.IsActive, false)
+    .Set(c => c.Nickname, null)
+    .Where(c => c.Email == "old@example.com")
+    .Execute();
+```
+
+وجود حداقل یک `Set` و یک `Where` اجباری است تا به‌صورت ناخواسته همهٔ ردیف‌ها ویرایش نشوند. مقدارها کاملاً پارامتری هستند، پراپرتی `[NotMapped]` پذیرفته نمی‌شود و کلیدهای تولیدشده قابل تغییر نیستند. خروجی `Execute` تعداد ردیف‌های تغییرکرده است.
 
 ## درج چند رکورد و Upsert
 
