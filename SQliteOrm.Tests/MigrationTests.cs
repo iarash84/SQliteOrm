@@ -75,26 +75,26 @@ public sealed class MigrationTests : IDisposable
         var migration = new TestMigration("001_Widget", builder =>
         {
             builder.CreateTable<MigrationWidget>();
-            builder.ExecuteSql("CREATE TABLE \"LegacyWidgets\" (\"Id\" INTEGER PRIMARY KEY);");
-            builder.AddColumn<LegacyWidget>(widget => widget.Email, nullable: true);
-            builder.CreateIndex<LegacyWidget>(widget => widget.Email);
-            builder.RenameColumn<LegacyWidget>(widget => widget.Email, "Contact");
-            builder.RenameTable<LegacyWidget>("RenamedLegacyWidgets");
+            builder.ExecuteSql("CREATE TABLE \"ExistingWidgets\" (\"Id\" INTEGER PRIMARY KEY);");
+            builder.AddColumn<ExistingWidget>(widget => widget.Email, nullable: true);
+            builder.CreateIndex<ExistingWidget>(widget => widget.Email);
+            builder.RenameColumn<ExistingWidget>(widget => widget.Email, "Contact");
+            builder.RenameTable<ExistingWidget>("RenamedExistingWidgets");
         }, builder =>
         {
-            builder.DropIndex("IX_LegacyWidgets_Email");
-            builder.ExecuteSql("DROP TABLE \"RenamedLegacyWidgets\";");
+            builder.DropIndex("IX_ExistingWidgets_Email");
+            builder.ExecuteSql("DROP TABLE \"RenamedExistingWidgets\";");
             builder.DropTable<MigrationWidget>();
         });
 
         _db.Migrate(migration);
-        var columns = _db.Query<ColumnRow>("PRAGMA table_info(\"RenamedLegacyWidgets\")");
+        var columns = _db.Query<ColumnRow>("PRAGMA table_info(\"RenamedExistingWidgets\")");
         Assert.Contains(columns, column => column.name == "Contact");
 
         _db.RollbackLastMigration(migration);
         Assert.Equal(0, HistoryCount());
         Assert.Equal(0, _db.ExecuteScalar<int>(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='RenamedLegacyWidgets'"));
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='RenamedExistingWidgets'"));
     }
 
     private int HistoryCount() => _db.ExecuteScalar<int>("SELECT COUNT(*) FROM \"__SQliteOrmMigrations\"");
@@ -119,8 +119,8 @@ public sealed class MigrationTests : IDisposable
         [Key, AutoIncrement] public long WidgetKey { get; set; }
         public string Name { get; set; } = string.Empty;
     }
-    [System.ComponentModel.DataAnnotations.Schema.Table("LegacyWidgets")]
-    private sealed class LegacyWidget
+    [System.ComponentModel.DataAnnotations.Schema.Table("ExistingWidgets")]
+    private sealed class ExistingWidget
     {
         public int Id { get; set; }
         public string? Email { get; set; }
