@@ -164,7 +164,7 @@ List<User> users = db.Table<User>()
 
 SQL executed: `SELECT * FROM "User" WHERE (("IsActive" = @p0) AND ("Credit" >= @p1));`
 
-Multiple `Where` calls are combined with `AND`. Supported terminal methods are `ToList`, `First`, `FirstOrDefault`, `Single`, `SingleOrDefault`, `Any`, and `Count`. `First` and `FirstOrDefault` use `LIMIT 1`; `Single` reads at most two rows; `Any` uses `EXISTS`; and `Count` executes `COUNT(*)` in SQLite.
+Multiple `Where` calls are combined with `AND`. Queries also support `OrderBy`, `OrderByDescending`, `ThenBy`, `ThenByDescending`, `Skip`, and `Take`. Terminal methods are `ToList`, `First`, `FirstOrDefault`, `Single`, `SingleOrDefault`, `Any`, and `Count`. `First` and `FirstOrDefault` use `LIMIT 1`; `Single` reads at most two rows; `Any` uses `EXISTS`; and `Count` executes `COUNT(*)` in SQLite.
 
 Runtime values, including captured variables, are always parameters:
 
@@ -265,23 +265,21 @@ SQL executed: `SELECT * FROM "User" WHERE "Nickname" IS NULL;`
 
 ### Sort, limit, and offset
 
-Ordering and pagination currently remain on the legacy `GetAll` API until equivalent fluent operators are introduced:
+Use strongly typed ordering and pagination as part of the deferred query:
 
 ```csharp
-var page = db.GetAll<User>(
-    conditions: new() { [u => u.IsActive] = true },
-    limit: 20,
-    offset: 40,
-    orderBy: new()
-    {
-        [u => u.CreatedAt] = SortOrder.DESC,
-        [u => u.Email] = SortOrder.ASC
-    });
+var page = db.Table<User>()
+    .Where(u => u.IsActive)
+    .OrderBy(u => u.Email)
+    .ThenByDescending(u => u.CreatedAt)
+    .Skip(40)
+    .Take(20)
+    .ToList();
 ```
 
-SQL executed: `SELECT * FROM "User" WHERE "IsActive" = @IsActive ORDER BY "CreatedAt" DESC, "Email" ASC LIMIT @__limit OFFSET @__offset;`
+SQL executed: `SELECT * FROM "User" WHERE ("IsActive" = @p0) ORDER BY "Email" ASC, "CreatedAt" DESC LIMIT @__limit OFFSET @__offset;`
 
-`limit` and `offset` must be zero or greater. A positive `limit` enables pagination.
+`Skip` and `Take` reject negative values. Calling `OrderBy` starts or replaces ordering, while `ThenBy` requires an existing ordering. The legacy dictionary-based ordering and `limit`/`offset` arguments remain available for compatibility.
 
 ### Count and existence checks
 
@@ -634,16 +632,12 @@ var activeCustomers = db.Table<Customer>()
     .Where(c => c.IsActive)
     .ToList();
 
-var results = db.GetAll<Customer>(
-    conditions: new()
-    {
-        [c => c.Name] = "Ali",
-        [c => c.Email] = "sara@example.com"
-    },
-    conditionType: LogicalOperator.Or,
-    limit: 10,
-    offset: 0,
-    orderBy: new() { [c => c.Name] = SortOrder.ASC });
+var results = db.Table<Customer>()
+    .Where(c => c.Name == "Ali" || c.Email == "sara@example.com")
+    .OrderBy(c => c.Name)
+    .Skip(10)
+    .Take(10)
+    .ToList();
 ```
 
 برای مقدار `null` از شرط `IS NULL` استفاده می‌شود:
@@ -659,7 +653,7 @@ var noExtraValue = db.Table<Customer>()
 ```csharp
 int allCount = db.Count<Customer>();
 int activeCount = db.Count<Customer>(c => c.IsActive);
-bool exists = db.Exists<Customer>(c => c.Email, "ali@example.com");
+bool exists = db.Any<Customer>(c => c.Email == "ali@example.com");
 ```
 
 ## اجرای SQL خام و امن

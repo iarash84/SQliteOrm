@@ -8,18 +8,55 @@ public sealed class SqliteQuery<T> where T : new()
 {
     private readonly SqLiteOrm _orm;
     private readonly IReadOnlyList<Expression<Func<T, bool>>> _predicates;
+    private readonly IReadOnlyList<Ordering> _orderings;
+    private readonly int? _skip;
+    private readonly int? _take;
 
-    internal SqliteQuery(SqLiteOrm orm, IReadOnlyList<Expression<Func<T, bool>>>? predicates = null)
+    internal SqliteQuery(SqLiteOrm orm, IReadOnlyList<Expression<Func<T, bool>>>? predicates = null,
+        IReadOnlyList<Ordering>? orderings = null, int? skip = null, int? take = null)
     {
         _orm = orm;
         _predicates = predicates ?? Array.Empty<Expression<Func<T, bool>>>();
+        _orderings = orderings ?? Array.Empty<Ordering>();
+        _skip = skip;
+        _take = take;
     }
 
     /// <summary>Adds a predicate. Execution is deferred until a terminal method is called.</summary>
     public SqliteQuery<T> Where(Expression<Func<T, bool>> predicate)
     {
         ArgumentNullException.ThrowIfNull(predicate);
-        return new SqliteQuery<T>(_orm, _predicates.Append(predicate).ToArray());
+        return New(predicates: _predicates.Append(predicate).ToArray());
+    }
+
+    /// <summary>Replaces existing ordering with an ascending property ordering.</summary>
+    public SqliteQuery<T> OrderBy<TKey>(Expression<Func<T, TKey>> selector) =>
+        New(orderings: new[] { CreateOrdering(selector, false) });
+
+    /// <summary>Replaces existing ordering with a descending property ordering.</summary>
+    public SqliteQuery<T> OrderByDescending<TKey>(Expression<Func<T, TKey>> selector) =>
+        New(orderings: new[] { CreateOrdering(selector, true) });
+
+    /// <summary>Adds an ascending property to the existing ordering.</summary>
+    public SqliteQuery<T> ThenBy<TKey>(Expression<Func<T, TKey>> selector) =>
+        AppendOrdering(CreateOrdering(selector, false));
+
+    /// <summary>Adds a descending property to the existing ordering.</summary>
+    public SqliteQuery<T> ThenByDescending<TKey>(Expression<Func<T, TKey>> selector) =>
+        AppendOrdering(CreateOrdering(selector, true));
+
+    /// <summary>Skips a non-negative number of matching rows.</summary>
+    public SqliteQuery<T> Skip(int count)
+    {
+        if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
+        return New(skip: count);
+    }
+
+    /// <summary>Limits the query to a non-negative number of matching rows.</summary>
+    public SqliteQuery<T> Take(int count)
+    {
+        if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
+        return New(take: count);
     }
 
     /// <summary>Returns all matching entities.</summary>
@@ -66,20 +103,20 @@ public sealed class SqliteQuery<T> where T : new()
     /// <summary>Efficiently determines whether any matching row exists.</summary>
     public bool Any()
     {
-        var predicate = BuildPredicate();
-        var table = Quote(EntityMapCache.Get<T>().TableName);
-        var where = predicate == null ? string.Empty : $" WHERE {predicate.Sql}";
-        return _orm.ExecuteScalar<int>($"SELECT EXISTS(SELECT 1 FROM {table}{where} LIMIT 1);",
-            predicate?.Parameters) != 0;
+        var selection = BuildSelection("1", 1);
+        return _orm.ExecuteScalar<int>($"SELECT EXISTS({selection.Sql});", selection.Parameters) != 0;
     }
 
     /// <summary>Counts matching rows in SQLite.</summary>
     public int Count()
     {
-        var predicate = BuildPredicate();
-        var table = Quote(EntityMapCache.Get<T>().TableName);
-        var where = predicate == null ? string.Empty : $" WHERE {predicate.Sql}";
-        return _orm.ExecuteScalar<int>($"SELECT COUNT(*) FROM {table}{where};", predicate?.Parameters);
+        if (_skip.HasValue || _take.HasValue)
+        {
+            var selection = BuildSelection("1");
+            return _orm.ExecuteScalar<int>($"SELECT COUNT(*) FROM ({selection.Sql});", selection.Parameters);
+        }
+        var direct = BuildSelection("COUNT(*)", includeOrdering: false);
+        return _orm.ExecuteScalar<int>($"{direct.Sql};", direct.Parameters);
     }
 
     private List<T> TakeForSingle()
@@ -90,13 +127,63 @@ public sealed class SqliteQuery<T> where T : new()
 
     internal SqliteQueryCommand BuildSelect(int? limit = null)
     {
+        var selection = BuildSelection("*", limit);
+        return new SqliteQueryCommand($"{selection.Sql};", selection.Parameters);
+    }
+
+    private SqliteQueryCommand BuildSelection(string columns, int? terminalLimit = null, bool includeOrdering = true)
+    {
         var predicate = BuildPredicate();
         var table = Quote(EntityMapCache.Get<T>().TableName);
         var where = predicate == null ? string.Empty : $" WHERE {predicate.Sql}";
-        var limitClause = limit.HasValue ? $" LIMIT {limit.Value}" : string.Empty;
-        return new SqliteQueryCommand($"SELECT * FROM {table}{where}{limitClause};",
-            predicate?.Parameters);
+        var parameters = predicate?.Parameters ?? new Dictionary<string, object>();
+        var ordering = includeOrdering && _orderings.Count > 0
+            ? $" ORDER BY {string.Join(", ", _orderings.Select(item => $"{Quote(item.Property.ColumnName)} {(item.Descending ? "DESC" : "ASC")}"))}"
+            : string.Empty;
+        var effectiveTake = terminalLimit.HasValue && _take.HasValue
+            ? Math.Min(terminalLimit.Value, _take.Value)
+            : terminalLimit ?? _take;
+        var pagination = string.Empty;
+        if (effectiveTake.HasValue)
+        {
+            parameters["@__limit"] = effectiveTake.Value;
+            pagination = " LIMIT @__limit";
+        }
+        else if (_skip.HasValue)
+        {
+            pagination = " LIMIT -1";
+        }
+        if (_skip.HasValue)
+        {
+            parameters["@__offset"] = _skip.Value;
+            pagination += " OFFSET @__offset";
+        }
+        return new SqliteQueryCommand($"SELECT {columns} FROM {table}{where}{ordering}{pagination}", parameters);
     }
+
+    private SqliteQuery<T> AppendOrdering(Ordering ordering)
+    {
+        if (_orderings.Count == 0)
+            throw new InvalidOperationException("ThenBy requires a preceding OrderBy or OrderByDescending call.");
+        return New(orderings: _orderings.Append(ordering).ToArray());
+    }
+
+    private static Ordering CreateOrdering<TKey>(Expression<Func<T, TKey>> selector, bool descending)
+    {
+        ArgumentNullException.ThrowIfNull(selector);
+        Expression body = selector.Body;
+        while (body is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } unary)
+            body = unary.Operand;
+        if (body is not MemberExpression { Expression: ParameterExpression } member ||
+            member.Expression != selector.Parameters[0])
+            throw new NotSupportedException(
+                $"Ordering selector '{selector}' is not supported. Select one mapped property directly.");
+        return new Ordering(EntityMapCache.Get<T>().GetProperty(member.Member.Name), descending);
+    }
+
+    private SqliteQuery<T> New(IReadOnlyList<Expression<Func<T, bool>>>? predicates = null,
+        IReadOnlyList<Ordering>? orderings = null, int? skip = null, int? take = null) =>
+        new(_orm, predicates ?? _predicates, orderings ?? _orderings, skip ?? _skip, take ?? _take);
 
     private SqlitePredicate? BuildPredicate()
     {
@@ -116,6 +203,7 @@ public sealed class SqliteQuery<T> where T : new()
     private static string Quote(string identifier) => $"\"{identifier.Replace("\"", "\"\"")}\"";
 
     private sealed record SqlitePredicate(string Sql, Dictionary<string, object> Parameters);
+    internal sealed record Ordering(PropertyMap Property, bool Descending);
 }
 
 internal sealed record SqliteQueryCommand(string Sql, Dictionary<string, object>? Parameters);

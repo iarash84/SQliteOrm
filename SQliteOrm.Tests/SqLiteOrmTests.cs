@@ -197,9 +197,65 @@ public sealed class SqLiteOrmTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => _orm.Table<Person>().SingleOrDefault());
 
         var command = _orm.Table<Person>().Where(person => person.Name == "Robert'); DROP TABLE Person;--").BuildSelect(1);
-        Assert.EndsWith(" LIMIT 1;", command.Sql);
+        Assert.EndsWith(" LIMIT @__limit;", command.Sql);
         Assert.DoesNotContain("DROP TABLE", command.Sql);
-        Assert.Single(command.Parameters!);
+        Assert.Equal(2, command.Parameters!.Count);
+        Assert.Equal(1, command.Parameters["@__limit"]);
+    }
+
+    [Fact]
+    public void Strongly_typed_query_supports_ordering_and_then_by()
+    {
+        _orm.Insert(new List<Person>
+        {
+            NewPerson("Charlie", 20), NewPerson("Alpha", 20), NewPerson("Bravo", 10)
+        });
+
+        Assert.Equal(new[] { "Alpha", "Bravo", "Charlie" },
+            _orm.Table<Person>().OrderBy(person => person.Name).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "Charlie", "Bravo", "Alpha" },
+            _orm.Table<Person>().OrderByDescending(person => person.Name).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "Bravo", "Alpha", "Charlie" },
+            _orm.Table<Person>().OrderBy(person => person.Age).ThenBy(person => person.Name).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "Bravo", "Charlie", "Alpha" },
+            _orm.Table<Person>().OrderBy(person => person.Age).ThenByDescending(person => person.Name).ToList().Select(person => person.Name));
+
+        Assert.Throws<InvalidOperationException>(() => _orm.Table<Person>().ThenBy(person => person.Name));
+        Assert.Throws<NotSupportedException>(() => _orm.Table<Person>().OrderBy(person => person.Age + 1));
+
+        var mappedCommand = _orm.Table<MappedRecord>().OrderBy(record => record.Name).BuildSelect();
+        Assert.Contains("ORDER BY \"display_name\" ASC", mappedCommand.Sql);
+    }
+
+    [Fact]
+    public void Strongly_typed_query_supports_skip_take_and_filtered_paging()
+    {
+        _orm.Insert(new List<Person>
+        {
+            NewPerson("A", 10, true), NewPerson("B", 20, false), NewPerson("C", 30, true),
+            NewPerson("D", 40, true), NewPerson("E", 50, false)
+        });
+
+        Assert.Equal(new[] { "C", "D", "E" },
+            _orm.Table<Person>().OrderBy(person => person.Age).Skip(2).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "A", "B" },
+            _orm.Table<Person>().OrderBy(person => person.Age).Take(2).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "B", "C" },
+            _orm.Table<Person>().OrderBy(person => person.Age).Skip(1).Take(2).ToList().Select(person => person.Name));
+        Assert.Equal(new[] { "C", "D" }, _orm.Table<Person>()
+            .Where(person => person.Active).OrderBy(person => person.Age).Skip(1).Take(2)
+            .ToList().Select(person => person.Name));
+        Assert.Equal(1, _orm.Table<Person>().OrderBy(person => person.Age).Skip(4).Count());
+        Assert.False(_orm.Table<Person>().Take(0).Any());
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => _orm.Table<Person>().Skip(-1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _orm.Table<Person>().Take(-1));
+
+        var command = _orm.Table<Person>().OrderBy(person => person.Name)
+            .ThenByDescending(person => person.Age).Skip(5).Take(10).BuildSelect();
+        Assert.Contains("ORDER BY \"Name\" ASC, \"Age\" DESC LIMIT @__limit OFFSET @__offset", command.Sql);
+        Assert.Equal(10, command.Parameters!["@__limit"]);
+        Assert.Equal(5, command.Parameters["@__offset"]);
     }
 
     [Fact]
