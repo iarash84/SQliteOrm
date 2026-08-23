@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using SQliteOrm.TypeMapping;
 
 namespace SQliteOrm.Mapping;
@@ -31,8 +32,16 @@ internal static class EntityMapCache
             .Where(p => p.CanRead && p.GetIndexParameters().Length == 0 && !p.IsDefined(typeof(NotMappedAttribute), false))
             .Select(CreatePropertyMap).ToArray();
         var tableName = type.GetCustomAttribute<TableAttribute>()?.Name ?? type.Name;
-        return (EntityMap)Activator.CreateInstance(typeof(EntityMap<>).MakeGenericType(type),
-            BindingFlags.Instance | BindingFlags.NonPublic, null, new object[] { tableName, properties }, null)!;
+        try
+        {
+            return (EntityMap)Activator.CreateInstance(typeof(EntityMap<>).MakeGenericType(type),
+                BindingFlags.Instance | BindingFlags.NonPublic, null, new object[] { tableName, properties }, null)!;
+        }
+        catch (TargetInvocationException exception) when (exception.InnerException != null)
+        {
+            ExceptionDispatchInfo.Capture(exception.InnerException).Throw();
+            throw;
+        }
     }
 
     private static PropertyMap CreatePropertyMap(PropertyInfo property)

@@ -82,6 +82,7 @@ public sealed class SqliteJoinProjectionQuery<TLeft, TRight, TResult>
         IReadOnlyList<SqlProjectionColumn> columns)
     { _orm = orm; _join = join; _leftPredicates = leftPredicates; _joinPredicates = joinPredicates; _columns = columns; }
 
+    /// <summary>Executes the joined projection query and materializes all results.</summary>
     public List<TResult> ToList()
     {
         var command = BuildCommand();

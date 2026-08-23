@@ -15,7 +15,15 @@ internal sealed class EntityMap<T> : EntityMap
 {
     private readonly IReadOnlyList<PropertyMap> _properties;
     internal EntityMap(string tableName, IReadOnlyList<PropertyMap> properties)
-    { TableName = tableName; _properties = properties; Key = properties.FirstOrDefault(p => p.IsPrimaryKey); }
+    {
+        var keys = properties.Where(property => property.IsPrimaryKey).ToArray();
+        if (keys.Length > 1)
+            throw new InvalidOperationException(
+                $"Type '{typeof(T).Name}' defines multiple [Key] properties. Composite keys are not supported.");
+        TableName = tableName;
+        _properties = properties;
+        Key = keys.SingleOrDefault();
+    }
     internal override Type EntityType => typeof(T);
     internal override string TableName { get; }
     internal override PropertyMap? Key { get; }

@@ -8,12 +8,12 @@ using SQliteOrm.Persistence;
 
 namespace SQliteOrm.Tests;
 
-public sealed class SqLiteOrmTests : IDisposable
+public sealed class SqliteOrmTests : IDisposable
 {
     private readonly string _databasePath;
     private readonly SqliteOrm _orm;
 
-    public SqLiteOrmTests()
+    public SqliteOrmTests()
     {
         _databasePath = Path.Combine(Path.GetTempPath(), $"sqlite-orm-tests-{Guid.NewGuid():N}.db");
         _orm = new SqliteOrm(new SqliteOrmOptions

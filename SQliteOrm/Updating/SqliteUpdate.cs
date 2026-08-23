@@ -13,6 +13,7 @@ public sealed class SqliteUpdate<T>
 
     internal SqliteUpdate(SqliteOrm orm) => _orm = orm;
 
+    /// <summary>Adds a parameterized assignment for one directly selected mapped property.</summary>
     public SqliteUpdate<T> Set<TProperty>(Expression<Func<T, TProperty>> selector, TProperty value)
     {
         var property = MappedSelector.Resolve(selector);
@@ -25,6 +26,7 @@ public sealed class SqliteUpdate<T>
         return this;
     }
 
+    /// <summary>Adds a required predicate; multiple predicates are combined with SQL <c>AND</c>.</summary>
     public SqliteUpdate<T> Where(Expression<Func<T, bool>> predicate)
     {
         ArgumentNullException.ThrowIfNull(predicate);
@@ -32,6 +34,8 @@ public sealed class SqliteUpdate<T>
         return this;
     }
 
+    /// <summary>Executes the update and returns the number of affected rows.</summary>
+    /// <exception cref="InvalidOperationException">No assignment or predicate has been configured.</exception>
     public int Execute()
     {
         if (_assignments.Count == 0)
