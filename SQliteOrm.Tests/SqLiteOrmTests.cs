@@ -285,6 +285,61 @@ public sealed class SqLiteOrmTests : IDisposable
     }
 
     [Fact]
+    public void Transaction_commits_multiple_entity_types_and_supports_all_session_operations()
+    {
+        SqliteTransactionSession? capturedSession = null;
+        _orm.Transaction(tx =>
+        {
+            capturedSession = tx;
+            var customer = new Customer { Name = "Before" };
+            tx.Insert(customer);
+            customer.Name = "After";
+            tx.Update(customer);
+            tx.Insert(new Purchase { CustomerId = customer.Id, Description = "Pending" });
+            tx.Execute("UPDATE \"Purchase\" SET \"Description\" = @value",
+                new() { ["@value"] = "Committed" });
+
+            Assert.Equal(1, tx.ExecuteScalar<int>("SELECT COUNT(*) FROM \"Customer\""));
+            Assert.Equal("After", tx.Table<Customer>().First().Name);
+            Assert.Equal("Committed", tx.Query<Purchase>("SELECT * FROM \"Purchase\"").Single().Description);
+        });
+
+        Assert.Equal("After", _orm.Table<Customer>().Single().Name);
+        Assert.Equal("Committed", _orm.Table<Purchase>().Single().Description);
+        Assert.Throws<InvalidOperationException>(() => capturedSession!.Execute("SELECT 1"));
+    }
+
+    [Fact]
+    public void Transaction_rolls_back_all_changes_and_rethrows_original_exception()
+    {
+        var expected = new TestTransactionException("rollback");
+        var actual = Assert.Throws<TestTransactionException>(() => _orm.Transaction(tx =>
+        {
+            tx.Insert(NewPerson("Rolled back", 1));
+            tx.Insert(new Customer { Name = "Also rolled back" });
+            Assert.Equal(1, tx.Table<Person>().Count());
+            throw expected;
+        }));
+
+        Assert.Same(expected, actual);
+        Assert.Equal(0, _orm.Count<Person>());
+        Assert.Equal(0, _orm.Count<Customer>());
+    }
+
+    [Fact]
+    public void Nested_transactions_are_rejected_and_outer_transaction_rolls_back()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() => _orm.Transaction(tx =>
+        {
+            tx.Insert(NewPerson("Outer", 1));
+            _orm.Transaction(_ => { });
+        }));
+
+        Assert.Contains("Nested transactions", exception.Message);
+        Assert.Equal(0, _orm.Count<Person>());
+    }
+
+    [Fact]
     public void Relation_queries_return_main_entities_and_accept_filters()
     {
         var customerId = _orm.Insert(new Customer { Name = "Contoso" });
@@ -644,4 +699,5 @@ public sealed class SqLiteOrmTests : IDisposable
         [NotMapped] public string? Ignored { get; set; }
     }
     private enum PersonKind { User, Admin }
+    private sealed class TestTransactionException(string message) : Exception(message);
 }

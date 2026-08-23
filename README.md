@@ -12,6 +12,7 @@
 - [Define a model](#define-a-model)
 - [Create tables](#create-tables)
 - [Create records](#create-records)
+- [Transactions](#transactions)
 - [Strongly typed queries](#strongly-typed-queries)
 - [Read records](#read-records)
 - [Update, upsert, and delete](#update-upsert-and-delete)
@@ -150,6 +151,29 @@ db.Insert(new List<User>
 SQL executed: `INSERT INTO "User" (...) VALUES (...);` once per item, inside one transaction.
 
 Do not include null elements in the list; that raises `ArgumentException`.
+
+## Transactions
+
+Use `Transaction` when several ORM operations must commit or roll back as one unit:
+
+```csharp
+db.Transaction(tx =>
+{
+    tx.Insert(order);
+    tx.Update(customer);
+    tx.Insert(payment);
+
+    var pending = tx.Table<Order>()
+        .Where(item => item.Status == OrderStatus.Pending)
+        .ToList();
+});
+```
+
+The ORM opens one connection, begins one SQLite transaction, and binds every session operation to both. It commits only after the callback returns successfully. If any operation or the callback throws, it attempts rollback and rethrows the original exception. The transaction, connection, and commands are disposed afterward.
+
+The session supports `Insert`, bulk `Insert`, `Update`, strongly typed `Delete`, primary-key `Delete`, `Table<T>()`, raw `Query`, `ExecuteScalar`, and `Execute`. A session cannot be used after its callback ends.
+
+Nested transactions are rejected with `InvalidOperationException`; they never create an independent inner transaction. Bulk insert uses this same infrastructure: outside a transaction it creates one transaction, while inside a transaction it reuses the active connection and transaction.
 
 ## Strongly typed queries
 
@@ -640,6 +664,20 @@ db.Insert(new List<Customer>
 var item = new Customer { Email = "a@example.com", Name = "نسخه جدید" };
 db.Upsert<Customer>(c => c.Email, item);
 ```
+
+## Transaction
+
+```csharp
+db.Transaction(tx =>
+{
+    tx.Insert(customer);
+    tx.Update(order);
+    tx.Execute("UPDATE \"Audit\" SET \"Status\" = @status",
+        new() { ["@status"] = "Done" });
+});
+```
+
+تمام عملیات callback از یک connection و transaction مشترک استفاده می‌کنند. در صورت خطا همه تغییرات rollback می‌شوند و nested transaction پشتیبانی نمی‌شود.
 
 در `Upsert` اگر رکوردی با ایمیل موردنظر وجود داشته باشد، به‌روزرسانی می‌شود؛ در غیر این صورت درج می‌شود.
 

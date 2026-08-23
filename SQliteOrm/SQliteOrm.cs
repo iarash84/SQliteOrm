@@ -12,6 +12,7 @@ using System.Linq;
 using SQliteOrm.Mapping;
 using SQliteOrm.TypeMapping;
 using SQliteOrm.Querying;
+using SQliteOrm.Transactions;
 
 namespace SQliteOrm
 {
@@ -71,6 +72,39 @@ namespace SQliteOrm
         /// دسترسی هم‌زمان به عملیات نوشتن در پایگاه داده را همگام‌سازی می‌کند.
         /// </summary>
         private readonly object _writeLock = new();
+        private readonly AsyncLocal<TransactionContext?> _transactionContext = new();
+
+        /// <summary>Runs all callback operations on one connection and commits them atomically.</summary>
+        public void Transaction(Action<SqliteTransactionSession> action)
+        {
+            ArgumentNullException.ThrowIfNull(action);
+            if (_transactionContext.Value is { IsActive: true })
+                throw new InvalidOperationException("Nested transactions are not supported.");
+            lock (_writeLock)
+            {
+                using var connection = OpenConnection();
+                using var transaction = connection.BeginTransaction();
+                var session = new SqliteTransactionSession(this);
+                _transactionContext.Value = new TransactionContext(connection, transaction);
+                try
+                {
+                    action(session);
+                    transaction.Commit();
+                }
+                catch
+                {
+                    try { transaction.Rollback(); }
+                    catch { }
+                    throw;
+                }
+                finally
+                {
+                    session.Deactivate();
+                    _transactionContext.Value!.IsActive = false;
+                    _transactionContext.Value = null;
+                }
+            }
+        }
 
         /// <summary>Starts a deferred, strongly typed query for <typeparamref name="T"/>.</summary>
         public SqliteQuery<T> Table<T>() where T : new() => new(this);
@@ -244,49 +278,16 @@ namespace SQliteOrm
         {
             if (objectList == null) throw new ArgumentNullException(nameof(objectList));
             if (objectList.Count == 0) return;
-
-            ValidateType<T>();
-            var map = EntityMapCache.Get<T>();
-            var tableName = QuoteIdentifier(map.TableName);
-            var properties = map.Properties.Where(p => !p.IsDatabaseGenerated).ToArray();
-            var query = properties.Length == 0
-                ? $"INSERT INTO {tableName} DEFAULT VALUES;"
-                : $"INSERT INTO {tableName} ({string.Join(", ", properties.Select(p => QuoteIdentifier(p.ColumnName)))}) " +
-                  $"VALUES ({string.Join(", ", properties.Select(p => $"@{p.PropertyName}"))});";
-
-            lock (_writeLock)
+            void InsertItems()
             {
-                using var connection = OpenConnection();
-                using var transaction = connection.BeginTransaction();
-                using var command = new SQLiteCommand(query, connection, transaction);
-                using var generatedKeyCommand = map.Key is { IsDatabaseGenerated: true }
-                    ? new SQLiteCommand("SELECT last_insert_rowid();", connection, transaction)
-                    : null;
-                foreach (var property in properties)
-                    command.Parameters.Add(new SQLiteParameter($"@{property.PropertyName}"));
-
-                try
+                foreach (var obj in objectList)
                 {
-                    foreach (var obj in objectList)
-                    {
-                        if (obj == null) throw new ArgumentException("The list cannot contain null items.", nameof(objectList));
-                        foreach (var property in properties)
-                            command.Parameters[$"@{property.PropertyName}"].Value = SqliteTypeHandler.ToDatabase(property.GetValue(obj!));
-                        command.ExecuteNonQuery();
-                        if (generatedKeyCommand != null)
-                        {
-                            var insertedId = generatedKeyCommand.ExecuteScalar();
-                            map.Key!.SetValue(obj!, SqliteTypeHandler.FromDatabase(insertedId, map.Key.ClrType));
-                        }
-                    }
-                    transaction.Commit();
-                }
-                catch
-                {
-                    transaction.Rollback();
-                    throw;
+                    if (obj == null) throw new ArgumentException("The list cannot contain null items.", nameof(objectList));
+                    Insert(obj);
                 }
             }
+            if (_transactionContext.Value is { IsActive: true }) InsertItems();
+            else Transaction(_ => InsertItems());
         }
 
 
@@ -1179,8 +1180,11 @@ namespace SQliteOrm
         public List<T> Query<T>(string query, Dictionary<string, object>? parameters = null) where T : new()
         {
             if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query cannot be empty.", nameof(query));
-            using var connection = OpenConnection();
-            using var command = new SQLiteCommand(query, connection);
+            var context = _transactionContext.Value is { IsActive: true } activeContext ? activeContext : null;
+            using var ownedConnection = context == null ? OpenConnection() : null;
+            using var command = context == null
+                ? new SQLiteCommand(query, ownedConnection)
+                : new SQLiteCommand(query, context.Connection, context.Transaction);
 
             AddParameters(command, parameters);
 
@@ -1214,8 +1218,11 @@ namespace SQliteOrm
         public T? ExecuteScalar<T>(string query, Dictionary<string, object>? parameters = null)
         {
             if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query cannot be empty.", nameof(query));
-            using var connection = OpenConnection();
-            using var command = new SQLiteCommand(query, connection);
+            var context = _transactionContext.Value is { IsActive: true } activeContext ? activeContext : null;
+            using var ownedConnection = context == null ? OpenConnection() : null;
+            using var command = context == null
+                ? new SQLiteCommand(query, ownedConnection)
+                : new SQLiteCommand(query, context.Connection, context.Transaction);
 
             AddParameters(command, parameters);
 
@@ -1238,8 +1245,11 @@ namespace SQliteOrm
             if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query cannot be empty.", nameof(query));
             lock (_writeLock)
             {
-                using var connection = OpenConnection();
-                using var command = new SQLiteCommand(query, connection);
+                var context = _transactionContext.Value is { IsActive: true } activeContext ? activeContext : null;
+                using var ownedConnection = context == null ? OpenConnection() : null;
+                using var command = context == null
+                    ? new SQLiteCommand(query, ownedConnection)
+                    : new SQLiteCommand(query, context.Connection, context.Transaction);
                 AddParameters(command, parameters);
 
                 try
