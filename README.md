@@ -12,6 +12,7 @@
 - [Define a model](#define-a-model)
 - [Create tables](#create-tables)
 - [Create records](#create-records)
+- [Migrations](#migrations)
 - [Transactions](#transactions)
 - [Strongly typed queries](#strongly-typed-queries)
 - [Read records](#read-records)
@@ -42,6 +43,7 @@ using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq.Expressions;
 using SQliteOrm;
+using SQliteOrm.Migrations;
 ```
 
 Create and dispose an independent ORM instance. This form is suitable for dependency injection and allows multiple databases in one process:
@@ -129,6 +131,76 @@ db.CreateTable<Product>();
 ```
 
 SQL executed: one `CREATE TABLE IF NOT EXISTS "..." (...);` statement for each model.
+
+`CreateTable<T>()` only creates a missing table. It does not compare, alter, or upgrade an existing schema. Use migrations for deployed databases whose schema changes over time.
+
+## Migrations
+
+Migrations are small ordered classes. Their stable ID defaults to the class name, so use sortable names such as `Migration001_CreateUsers` and never rename an applied migration.
+
+```csharp
+public sealed class Migration001_CreateUsers : Migration
+{
+    public override void Up(MigrationBuilder migration)
+    {
+        migration.CreateTable<User>();
+        migration.CreateIndex<User>(user => user.Email, unique: true);
+    }
+
+    public override void Down(MigrationBuilder migration)
+    {
+        migration.DropIndex("IX_User_Email");
+        migration.DropTable<User>();
+    }
+}
+
+public sealed class Migration002_AddNickname : Migration
+{
+    public override void Up(MigrationBuilder migration)
+    {
+        migration.AddColumn<User>(user => user.Nickname, nullable: true);
+    }
+
+    public override void Down(MigrationBuilder migration)
+    {
+        // Dropping a column requires a table rebuild and is intentionally
+        // not provided by the first migration API.
+    }
+}
+```
+
+Apply migrations during application startup:
+
+```csharp
+db.Migrate(
+    new Migration002_AddNickname(),
+    new Migration001_CreateUsers());
+```
+
+The supplied order does not matter: migrations run by ID using ordinal ordering. Applied IDs and UTC timestamps are stored in `__SQliteOrmMigrations`. An applied migration is never run twice, including after the application restarts.
+
+Each pending migration runs in its own transaction. Its schema operations and history insert commit together; if an operation fails, that migration is rolled back and its ID is not recorded. Earlier successful migrations remain applied.
+
+The initial builder supports:
+
+- `ExecuteSql`
+- `CreateTable<T>` and `DropTable<T>`
+- strongly typed `AddColumn`
+- strongly typed `CreateIndex` and named `DropIndex`
+- `RenameTable`
+- strongly typed `RenameColumn`
+
+`RenameColumn` requires SQLite 3.25 or newer. `AddColumn` deliberately rejects primary-key, auto-increment, and unique properties because SQLite cannot add those constraints with a simple `ALTER TABLE`. Dropping columns, changing column definitions, and other operations requiring table reconstruction are not implemented; use carefully reviewed `ExecuteSql` when you intentionally own that rebuild process.
+
+To execute `Down` for the latest applied migration:
+
+```csharp
+db.RollbackLastMigration(
+    new Migration001_CreateUsers(),
+    new Migration002_AddNickname());
+```
+
+The matching applied migration must be supplied. Its `Down` operations and history deletion run in one transaction.
 
 ## Create records
 
@@ -717,6 +789,29 @@ db.Insert(new List<Customer>
 var item = new Customer { Email = "a@example.com", Name = "نسخه جدید" };
 db.Upsert(item, conflictOn: c => c.Email);
 ```
+
+## Migration و تغییر نسخهٔ پایگاه داده
+
+`CreateTable<T>()` فقط جدولِ موجودنباشد را ایجاد می‌کند و ساختار جدول موجود را ارتقا نمی‌دهد. برای تغییر schema در نسخه‌های بعدی برنامه از migration استفاده کنید:
+
+```csharp
+public sealed class Migration002_AddNickname : Migration
+{
+    public override void Up(MigrationBuilder migration)
+    {
+        migration.AddColumn<Customer>(x => x.Nickname, nullable: true);
+    }
+
+    public override void Down(MigrationBuilder migration)
+    {
+        // حذف ستون در API اولیه نیازمند بازسازی جدول است و پشتیبانی نمی‌شود.
+    }
+}
+
+db.Migrate(new Migration002_AddNickname());
+```
+
+Migrationها بر اساس شناسه به‌ترتیب قطعی اجرا می‌شوند و شناسه و زمان UTC اجرا در جدول `__SQliteOrmMigrations` ثبت می‌شود. هر migration فقط یک‌بار و در transaction مستقل اجرا می‌شود؛ در صورت خطا هم تغییرات همان migration و هم ثبت تاریخچه rollback می‌شوند. عملیات اولیهٔ builder شامل `ExecuteSql`، ساخت و حذف جدول، افزودن ستون، ساخت و حذف index و تغییر نام جدول یا ستون است. عملیات نیازمند بازسازی جدول، از جمله حذف ستون، عمداً در نسخهٔ اول پشتیبانی نمی‌شوند.
 
 ## Transaction
 
