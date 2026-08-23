@@ -6,13 +6,13 @@ namespace SQliteOrm;
 /// <summary>Builds and executes a strongly typed query for one mapped entity type.</summary>
 public sealed class SqliteQuery<T> where T : new()
 {
-    private readonly SqLiteOrm _orm;
+    private readonly SqliteOrm _orm;
     private readonly IReadOnlyList<Expression<Func<T, bool>>> _predicates;
     private readonly IReadOnlyList<Ordering> _orderings;
     private readonly int? _skip;
     private readonly int? _take;
 
-    internal SqliteQuery(SqLiteOrm orm, IReadOnlyList<Expression<Func<T, bool>>>? predicates = null,
+    internal SqliteQuery(SqliteOrm orm, IReadOnlyList<Expression<Func<T, bool>>>? predicates = null,
         IReadOnlyList<Ordering>? orderings = null, int? skip = null, int? take = null)
     {
         _orm = orm;

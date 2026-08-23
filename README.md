@@ -44,16 +44,36 @@ using System.Linq.Expressions;
 using SQliteOrm;
 ```
 
-Initialize the singleton once, before accessing `SqLiteOrm.Instance`:
+Create and dispose an independent ORM instance. This form is suitable for dependency injection and allows multiple databases in one process:
 
 ```csharp
-var databasePath = Path.Combine(AppContext.BaseDirectory, "app.db");
-SqLiteOrm.Initialize(databasePath);
-
-var db = SqLiteOrm.Instance;
+using var db = new SqliteOrm("Data Source=app.db");
+using var cache = new SqliteOrm("Data Source=cache.db");
 ```
 
-Calling `SqLiteOrm.Instance` before `Initialize` throws `InvalidOperationException`. The database path cannot be null, empty, or whitespace.
+For explicit database behavior, use options:
+
+```csharp
+using var db = new SqliteOrm(new SqliteOrmOptions
+{
+    ConnectionString = "Data Source=app.db",
+    EnableForeignKeys = true,
+    EnableWal = true,
+    BusyTimeout = TimeSpan.FromSeconds(5),
+    CommandTimeout = 30
+});
+```
+
+`SqliteOrm` has no global mutable database state. Each instance owns its connection configuration; connections themselves are opened per operation or per transaction session. After `Dispose`, starting another database operation throws `ObjectDisposedException`.
+
+The former singleton remains as a compatibility facade during migration:
+
+```csharp
+SqLiteOrm.Initialize("app.db");
+SqLiteOrm legacyDb = SqLiteOrm.Instance;
+```
+
+New code should inject or directly construct `SqliteOrm` instead. The compatibility facade inherits the same implementation and does not maintain a second ORM code path.
 
 ## Define a model
 
@@ -95,7 +115,6 @@ public sealed class User
 Create the table before inserting or querying data. It is safe to call this repeatedly because the generated SQL uses `CREATE TABLE IF NOT EXISTS`.
 
 ```csharp
-var db = SqLiteOrm.Instance;
 db.CreateTable<User>();
 ```
 
@@ -580,7 +599,7 @@ SQL executed: `SELECT COUNT(*) FROM "User" WHERE "IsActive" = @active`, `SELECT 
 
 ## Common mistakes
 
-- Call `Initialize` once before `Instance`.
+- Prefer constructing and injecting `SqliteOrm`; use `SqLiteOrm.Initialize/Instance` only for compatibility with older code.
 - Call `CreateTable<T>()` before using a model's table.
 - Strongly typed predicates support mapped properties, comparisons, boolean composition, null checks, supported string methods, and collection `Contains`; computed arithmetic and arbitrary method calls are rejected.
 - Use `@parameterName` placeholders with `Query`, `ExecuteNonQuery`, and `ExecuteScalar` instead of string interpolation.
@@ -611,8 +630,7 @@ Arithmetic, arbitrary method calls, computed properties, navigation/member chain
 ```csharp
 using SQliteOrm;
 
-SqLiteOrm.Initialize(Path.Combine(AppContext.BaseDirectory, "app.db"));
-var db = SqLiteOrm.Instance;
+using var db = new SqliteOrm("Data Source=app.db");
 ```
 
 مدل و جدول را بسازید:
@@ -736,7 +754,7 @@ int count = db.ExecuteScalar<int>("SELECT COUNT(*) FROM \"Customer\"");
 
 ## نکات مهم
 
-- پیش از استفاده از `SqLiteOrm.Instance` حتماً `Initialize` را فراخوانی کنید.
+- برای کد جدید یک نمونه مستقل `SqliteOrm` بسازید و آن را Dispose کنید؛ API سراسری `SqLiteOrm.Instance` فقط برای سازگاری نگه داشته شده است.
 - قبل از درج یا خواندن داده، `CreateTable<T>()` را اجرا کنید.
 - برای شرط‌ها فقط عبارت انتخاب ویژگی بنویسید؛ مانند `c => c.Email`.
 - متدهای رابطه، مدل اصلی را نگاشت می‌کنند؛ برای خروجی سفارشی از `Query<T>` و یک مدل projection استفاده کنید.

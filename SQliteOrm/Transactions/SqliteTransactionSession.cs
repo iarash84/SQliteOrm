@@ -5,9 +5,9 @@ namespace SQliteOrm;
 /// <summary>Provides ORM operations bound to one SQLite connection and transaction.</summary>
 public sealed class SqliteTransactionSession
 {
-    private readonly SqLiteOrm _orm;
+    private readonly SqliteOrm _orm;
     private bool _active = true;
-    internal SqliteTransactionSession(SqLiteOrm orm) => _orm = orm;
+    internal SqliteTransactionSession(SqliteOrm orm) => _orm = orm;
     internal void Deactivate() => _active = false;
     public int Insert<T>(T entity) { EnsureActive(); return _orm.Insert(entity); }
     public void Insert<T>(List<T> entities) { EnsureActive(); _orm.Insert(entities); }

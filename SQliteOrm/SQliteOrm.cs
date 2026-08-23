@@ -47,7 +47,7 @@ namespace SQliteOrm
     /// <summary>
     /// امکانات ایجاد جدول و انجام عملیات متداول CRUD را برای پایگاه داده SQLite فراهم می‌کند.
     /// </summary>
-    public class SqLiteOrm
+    public class SqliteOrm : IDisposable
     {
         /// <summary>
         /// ویژگی‌های نگاشت‌شونده هر نوع را برای جلوگیری از بازتاب مکرر ذخیره می‌کند.
@@ -60,14 +60,11 @@ namespace SQliteOrm
             "NO ACTION", "RESTRICT", "SET NULL", "SET DEFAULT", "CASCADE"
         };
         /// <summary>
-        /// نمونه سراسری و مقداردهی‌شده کلاس را نگه می‌دارد.
-        /// </summary>
-        private static SqLiteOrm? _instance;
-
-        /// <summary>
         /// رشته اتصال مورد استفاده برای باز کردن اتصال‌های SQLite است.
         /// </summary>
         private readonly string _connectionString;
+        private readonly SqliteOrmOptions _options;
+        private bool _disposed;
 
         /// <summary>
         /// دسترسی هم‌زمان به عملیات نوشتن در پایگاه داده را همگام‌سازی می‌کند.
@@ -120,52 +117,32 @@ namespace SQliteOrm
 
 
 
-        /// <summary>
-        /// نمونه مقداردهی‌شده <see cref="SqLiteOrm"/> را بازمی‌گرداند.
-        /// </summary>
-        /// <exception cref="InvalidOperationException">
-        /// اگر پیش از فراخوانی <see cref="Initialize(string)"/> به این ویژگی دسترسی شود، پرتاب می‌شود.
-        /// </exception>
-        public static SqLiteOrm Instance
+        /// <summary>Creates an independent ORM instance from a SQLite connection string.</summary>
+        public SqliteOrm(string connectionString) : this(new SqliteOrmOptions { ConnectionString = connectionString }) { }
+
+        /// <summary>Creates an independently configured ORM instance.</summary>
+        public SqliteOrm(SqliteOrmOptions options)
         {
-            get
+            ArgumentNullException.ThrowIfNull(options);
+            if (string.IsNullOrWhiteSpace(options.ConnectionString))
+                throw new ArgumentException("Connection string cannot be null or empty.", nameof(options));
+            if (options.BusyTimeout is { } busyTimeout && busyTimeout < TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(options), "Busy timeout cannot be negative.");
+            if (options.CommandTimeout is < 0)
+                throw new ArgumentOutOfRangeException(nameof(options), "Command timeout cannot be negative.");
+            _options = new SqliteOrmOptions
             {
-                if (_instance == null)
-                    throw new InvalidOperationException(
-                        "SqLiteOrm is not initialized. Call SqLiteOrm.Initialize(databasePath) first.");
-
-                return _instance;
-            }
-        }
-
-        /// <summary>
-        /// نمونه سراسری ORM را با مسیر پایگاه داده مشخص‌شده مقداردهی می‌کند.
-        /// </summary>
-        /// <param name="databasePath">مسیر فایل پایگاه داده SQLite.</param>
-        /// <exception cref="ArgumentException">اگر مسیر پایگاه داده خالی یا فقط شامل فاصله باشد، پرتاب می‌شود.</exception>
-        public static void Initialize(string databasePath)
-        {
-            Interlocked.Exchange(ref _instance, new SqLiteOrm(databasePath));
-        }
-
-        /// <summary>
-        /// یک نمونه جدید از ORM را ایجاد و رشته اتصال SQLite آن را پیکربندی می‌کند.
-        /// </summary>
-        /// <param name="databasePath">مسیر فایل پایگاه داده SQLite.</param>
-        /// <exception cref="ArgumentException">اگر مسیر پایگاه داده خالی یا فقط شامل فاصله باشد، پرتاب می‌شود.</exception>
-        private SqLiteOrm(string databasePath)
-        {
-            if (string.IsNullOrWhiteSpace(databasePath))
-                throw new ArgumentException(
-                    "Database path cannot be null or empty.",
-                    nameof(databasePath));
-
-            _connectionString = new SQLiteConnectionStringBuilder
+                ConnectionString = options.ConnectionString,
+                EnableForeignKeys = options.EnableForeignKeys,
+                EnableWal = options.EnableWal,
+                BusyTimeout = options.BusyTimeout,
+                CommandTimeout = options.CommandTimeout
+            };
+            var builder = new SQLiteConnectionStringBuilder(options.ConnectionString)
             {
-                DataSource = databasePath,
-                Version = 3,
-                ForeignKeys = true
-            }.ConnectionString;
+                ForeignKeys = options.EnableForeignKeys
+            };
+            _connectionString = builder.ConnectionString;
         }
 
 
@@ -822,7 +799,7 @@ namespace SQliteOrm
         /// <returns>لیستی از رکوردهای استخراج شده از نوع T.</returns>
         /// <example>
         /// <code>
-        /// var nodes = SqLiteOrm.Instance.GetAllWithRelations<Node>(
+        /// var nodes = db.GetAllWithRelations<Node>(
         ///     "t",
         ///     new List<(Expression<Func<Node, object>>, string, string)>
         ///     {
@@ -1100,7 +1077,7 @@ namespace SQliteOrm
         /// فرض کنید می‌خواهید بررسی کنید که آیا رکوردی با شناسه مشخص وجود دارد.
         /// برای این کار می‌توانید از کد زیر استفاده کنید:
         /// <code>
-        /// bool exists = SqLiteOrm.Instance.Exists<MyEntity>("123", x =&gt; x.Id);
+        /// bool exists = db.Exists<MyEntity>("123", x =&gt; x.Id);
         /// </code>
         /// این کد بررسی می‌کند که آیا رکوردی با شناسه "123" در جدول <c>MyEntity</c> وجود دارد یا خیر.
         /// </example>
@@ -1174,6 +1151,7 @@ namespace SQliteOrm
             using var command = context == null
                 ? new SQLiteCommand(query, ownedConnection)
                 : new SQLiteCommand(query, context.Connection, context.Transaction);
+            ConfigureCommand(command);
 
             AddParameters(command, parameters);
 
@@ -1212,6 +1190,7 @@ namespace SQliteOrm
             using var command = context == null
                 ? new SQLiteCommand(query, ownedConnection)
                 : new SQLiteCommand(query, context.Connection, context.Transaction);
+            ConfigureCommand(command);
 
             AddParameters(command, parameters);
 
@@ -1239,6 +1218,7 @@ namespace SQliteOrm
                 using var command = context == null
                     ? new SQLiteCommand(query, ownedConnection)
                     : new SQLiteCommand(query, context.Connection, context.Transaction);
+                ConfigureCommand(command);
                 AddParameters(command, parameters);
 
                 try
@@ -1302,9 +1282,39 @@ namespace SQliteOrm
         /// <returns>اتصال بازشده به پایگاه داده.</returns>
         private SQLiteConnection OpenConnection()
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             var connection = new SQLiteConnection(_connectionString);
             connection.Open();
+            using var command = new SQLiteCommand(connection);
+            if (_options.CommandTimeout.HasValue)
+                command.CommandTimeout = _options.CommandTimeout.Value;
+            var pragmas = new List<string>
+            {
+                $"PRAGMA foreign_keys = {(_options.EnableForeignKeys ? "ON" : "OFF")}"
+            };
+            if (_options.BusyTimeout.HasValue)
+                pragmas.Add($"PRAGMA busy_timeout = {(long)_options.BusyTimeout.Value.TotalMilliseconds}");
+            if (_options.EnableWal)
+                pragmas.Add("PRAGMA journal_mode = WAL");
+            command.CommandText = string.Join("; ", pragmas) + ";";
+            command.ExecuteNonQuery();
             return connection;
+        }
+
+        private void ConfigureCommand(SQLiteCommand command)
+        {
+            if (_options.CommandTimeout.HasValue)
+                command.CommandTimeout = _options.CommandTimeout.Value;
+        }
+
+        /// <summary>Disposes this instance and prevents it from opening further connections.</summary>
+        public void Dispose()
+        {
+            if (_disposed) return;
+            if (_transactionContext.Value is { IsActive: true })
+                throw new InvalidOperationException("Cannot dispose SqliteOrm during an active transaction callback.");
+            _disposed = true;
+            GC.SuppressFinalize(this);
         }
 
         /// <summary>

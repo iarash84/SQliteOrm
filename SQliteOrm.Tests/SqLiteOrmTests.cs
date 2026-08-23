@@ -6,20 +6,21 @@ using SQliteOrm;
 using SQliteOrm.Mapping;
 using SQliteOrm.Persistence;
 
-[assembly: CollectionBehavior(DisableTestParallelization = true)]
-
 namespace SQliteOrm.Tests;
 
 public sealed class SqLiteOrmTests : IDisposable
 {
     private readonly string _databasePath;
-    private readonly SqLiteOrm _orm;
+    private readonly SqliteOrm _orm;
 
     public SqLiteOrmTests()
     {
         _databasePath = Path.Combine(Path.GetTempPath(), $"sqlite-orm-tests-{Guid.NewGuid():N}.db");
-        SqLiteOrm.Initialize(_databasePath);
-        _orm = SqLiteOrm.Instance;
+        _orm = new SqliteOrm(new SqliteOrmOptions
+        {
+            ConnectionString = $"Data Source={_databasePath}",
+            EnableForeignKeys = true
+        });
         _orm.CreateTable<Person>();
         _orm.CreateTable<Customer>();
         _orm.CreateTable<Purchase>();
@@ -656,6 +657,7 @@ public sealed class SqLiteOrmTests : IDisposable
 
     public void Dispose()
     {
+        _orm.Dispose();
         SQLiteConnection.ClearAllPools();
         if (File.Exists(_databasePath)) File.Delete(_databasePath);
     }
