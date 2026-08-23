@@ -14,6 +14,8 @@ using SQliteOrm.TypeMapping;
 using SQliteOrm.Querying;
 using SQliteOrm.Transactions;
 using SQliteOrm.Persistence;
+using SQliteOrm.Migrations;
+using SQliteOrm.RawSql;
 
 namespace SQliteOrm
 {
@@ -49,6 +51,7 @@ namespace SQliteOrm
     /// </summary>
     public class SqliteOrm : IDisposable
     {
+        private const string MigrationHistoryTable = "__SQliteOrmMigrations";
         /// <summary>
         /// ویژگی‌های نگاشت‌شونده هر نوع را برای جلوگیری از بازتاب مکرر ذخیره می‌کند.
         /// </summary>
@@ -103,6 +106,64 @@ namespace SQliteOrm
                 }
             }
         }
+
+        /// <summary>Applies pending migrations once, in deterministic ID order.</summary>
+        public void Migrate(params Migration[] migrations)
+        {
+            ArgumentNullException.ThrowIfNull(migrations);
+            EnsureMigrationHistoryTable();
+            var ordered = migrations.Select(migration => migration ?? throw new ArgumentException(
+                    "Migration collection cannot contain null values.", nameof(migrations)))
+                .OrderBy(migration => migration.Id, StringComparer.Ordinal).ToArray();
+            if (ordered.Any(migration => string.IsNullOrWhiteSpace(migration.Id)))
+                throw new ArgumentException("Migration IDs cannot be empty.", nameof(migrations));
+            var duplicate = ordered.GroupBy(migration => migration.Id, StringComparer.Ordinal)
+                .FirstOrDefault(group => group.Count() > 1);
+            if (duplicate != null)
+                throw new ArgumentException($"Duplicate migration ID '{duplicate.Key}'.", nameof(migrations));
+
+            var applied = Query<MigrationHistoryRow>(
+                $"SELECT \"MigrationId\", \"AppliedAtUtc\" FROM {QuoteIdentifier(MigrationHistoryTable)};")
+                .Select(row => row.MigrationId).ToHashSet(StringComparer.Ordinal);
+            foreach (var migration in ordered.Where(migration => !applied.Contains(migration.Id)))
+            {
+                Transaction(tx =>
+                {
+                    var builder = new MigrationBuilder();
+                    migration.Up(builder);
+                    builder.Apply(tx);
+                    tx.Execute($"INSERT INTO {QuoteIdentifier(MigrationHistoryTable)} " +
+                               "(\"MigrationId\", \"AppliedAtUtc\") VALUES (@id, @appliedAt);",
+                        new() { ["@id"] = migration.Id, ["@appliedAt"] = DateTimeOffset.UtcNow });
+                });
+            }
+        }
+
+        /// <summary>Runs Down for the most recently applied supplied migration and removes its history row.</summary>
+        public void RollbackLastMigration(params Migration[] migrations)
+        {
+            ArgumentNullException.ThrowIfNull(migrations);
+            EnsureMigrationHistoryTable();
+            var latest = Query<MigrationHistoryRow>(
+                $"SELECT \"MigrationId\", \"AppliedAtUtc\" FROM {QuoteIdentifier(MigrationHistoryTable)} " +
+                "ORDER BY \"AppliedAtUtc\" DESC, \"MigrationId\" DESC LIMIT 1;").FirstOrDefault();
+            if (latest == null) return;
+            var migration = migrations.FirstOrDefault(item => item != null &&
+                item.Id.Equals(latest.MigrationId, StringComparison.Ordinal)) ?? throw new InvalidOperationException(
+                $"Applied migration '{latest.MigrationId}' was not supplied for rollback.");
+            Transaction(tx =>
+            {
+                var builder = new MigrationBuilder();
+                migration.Down(builder);
+                builder.Apply(tx);
+                tx.Execute($"DELETE FROM {QuoteIdentifier(MigrationHistoryTable)} WHERE \"MigrationId\" = @id;",
+                    new() { ["@id"] = migration.Id });
+            });
+        }
+
+        private void EnsureMigrationHistoryTable() => ExecuteNonQuery(
+            $"CREATE TABLE IF NOT EXISTS {QuoteIdentifier(MigrationHistoryTable)} (" +
+            "\"MigrationId\" TEXT PRIMARY KEY, \"AppliedAtUtc\" TEXT NOT NULL);");
 
         /// <summary>Starts a deferred, strongly typed query for <typeparamref name="T"/>.</summary>
         public SqliteQuery<T> Table<T>() where T : new() => new(this);
@@ -1159,6 +1220,10 @@ namespace SQliteOrm
             return MapReaderToObjects<T>(reader);
         }
 
+        /// <summary>Executes raw SQL using parameters read from an anonymous or regular object.</summary>
+        public List<T> Query<T>(string query, object parameters) where T : new() =>
+            Query<T>(query, RawSqlParameters.FromObject(parameters));
+
 
         /// <summary>
         /// این تابع برای اجرای یک کوئری SQL که یک مقدار اسکالر (تک مقداری) برمی‌گرداند، استفاده می‌شود.
@@ -1200,6 +1265,10 @@ namespace SQliteOrm
                 : (T)SqliteTypeHandler.FromDatabase(result, typeof(T));
         }
 
+        /// <summary>Executes scalar raw SQL using parameters read from an anonymous or regular object.</summary>
+        public T? ExecuteScalar<T>(string query, object parameters) =>
+            ExecuteScalar<T>(query, RawSqlParameters.FromObject(parameters));
+
         /// <summary>
         /// متد برای اجرای کوئری‌های SQL بدون بازگشت داده
         /// </summary>
@@ -1207,6 +1276,10 @@ namespace SQliteOrm
         /// <param name="parameters">پارامترهای کوئری</param>
         public void ExecuteNonQuery(string query, Dictionary<string, object>? parameters = null)
             => _ = ExecuteNonQueryAffected(query, parameters);
+
+        /// <summary>Executes raw SQL using parameters read from an anonymous or regular object.</summary>
+        public void ExecuteNonQuery(string query, object parameters) =>
+            _ = ExecuteNonQueryAffected(query, RawSqlParameters.FromObject(parameters));
 
         internal int ExecuteNonQueryAffected(string query, Dictionary<string, object>? parameters = null)
         {
@@ -1324,8 +1397,7 @@ namespace SQliteOrm
         /// <param name="parameters">دیکشنری نام و مقدار پارامترها؛ می‌تواند <c>null</c> باشد.</param>
         private static void AddParameters(SQLiteCommand command, Dictionary<string, object>? parameters)
         {
-            if (parameters == null) return;
-            foreach (var parameter in parameters)
+            foreach (var parameter in RawSqlParameters.Normalize(parameters) ?? [])
                 command.Parameters.AddWithValue(parameter.Key, SqliteTypeHandler.ToDatabase(parameter.Value));
         }
 

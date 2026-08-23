@@ -630,11 +630,7 @@ For queries not covered by the ORM API, use parameterized raw SQL. Never concate
 ```csharp
 db.ExecuteNonQuery(
     "UPDATE \"User\" SET \"Credit\" = \"Credit\" + @amount WHERE \"Id\" = @id",
-    new Dictionary<string, object>
-    {
-        ["@amount"] = 10.0,
-        ["@id"] = 42
-    });
+    new { amount = 10.0, id = 42 });
 ```
 
 SQL executed exactly as supplied: `UPDATE "User" SET "Credit" = "Credit" + @amount WHERE "Id" = @id`.
@@ -644,7 +640,7 @@ SQL executed exactly as supplied: `UPDATE "User" SET "Credit" = "Credit" + @amou
 ```csharp
 List<User> users = db.Query<User>(
     "SELECT * FROM \"User\" WHERE \"Credit\" >= @minimumCredit",
-    new() { ["@minimumCredit"] = 100.0 });
+    new { minimumCredit = 100.0 });
 ```
 
 SQL executed exactly as supplied: `SELECT * FROM "User" WHERE "Credit" >= @minimumCredit`.
@@ -660,7 +656,7 @@ public sealed class UserSummary
 
 var summaries = db.Query<UserSummary>(
     "SELECT \"Email\", \"Credit\" FROM \"User\" WHERE \"IsActive\" = @active",
-    new() { ["@active"] = true });
+    new { active = true });
 ```
 
 SQL executed exactly as supplied: `SELECT "Email", "Credit" FROM "User" WHERE "IsActive" = @active`.
@@ -670,7 +666,7 @@ SQL executed exactly as supplied: `SELECT "Email", "Credit" FROM "User" WHERE "I
 ```csharp
 int activeUserCount = db.ExecuteScalar<int>(
     "SELECT COUNT(*) FROM \"User\" WHERE \"IsActive\" = @active",
-    new() { ["@active"] = true });
+    new { active = true });
 
 double highestCredit = db.ExecuteScalar<double>("SELECT MAX(\"Credit\") FROM \"User\"");
 string? missingValue = db.ExecuteScalar<string>("SELECT NULL");
@@ -679,6 +675,24 @@ string? missingValue = db.ExecuteScalar<string>("SELECT NULL");
 SQL executed: `SELECT COUNT(*) FROM "User" WHERE "IsActive" = @active`, `SELECT MAX("Credit") FROM "User"`, and `SELECT NULL`.
 
 `ExecuteScalar<T>` returns `default` when SQLite returns `NULL`.
+
+Anonymous objects are the convenient default for raw SQL parameters. Public readable properties become named SQLite parameters; `null`, enums, GUIDs, temporal values, and other supported values use the ORM's centralized type conversion. Property metadata is cached per parameter-object type. Values are always bound through `SQLiteCommand` and are never substituted into the SQL text.
+
+Use a dictionary when parameter names are assembled dynamically. Names may include or omit the `@` prefix:
+
+```csharp
+var parameters = new Dictionary<string, object>
+{
+    ["minimumCredit"] = 100.0,
+    ["@active"] = true
+};
+
+var dynamicUsers = db.Query<User>(
+    "SELECT * FROM \"User\" WHERE \"Credit\" >= @minimumCredit AND \"IsActive\" = @active",
+    parameters);
+```
+
+Empty, malformed, or duplicate normalized parameter names such as `name` and `@name` are rejected. Anonymous objects and dictionaries are intended only for raw SQL; use the strongly typed `Table<T>()` query API for normal ORM queries.
 
 ## Attributes and supported types
 
@@ -883,14 +897,16 @@ bool exists = db.Any<Customer>(c => c.Email == "ali@example.com");
 ```csharp
 db.ExecuteNonQuery(
     "UPDATE \"Customer\" SET \"IsActive\" = @active WHERE \"Email\" = @email",
-    new() { ["@active"] = false, ["@email"] = "ali@example.com" });
+    new { active = false, email = "ali@example.com" });
 
 var customers = db.Query<Customer>(
     "SELECT * FROM \"Customer\" WHERE \"Name\" = @name",
-    new() { ["@name"] = "Ali" });
+    new { name = "Ali" });
 
 int count = db.ExecuteScalar<int>("SELECT COUNT(*) FROM \"Customer\"");
 ```
+
+برای SQL خام، anonymous object روش پیشنهادی است. پراپرتی‌های public به پارامتر تبدیل می‌شوند و مقدارهای `null`، enum و سایر نوع‌های پشتیبانی‌شده از تبدیل مرکزی ORM عبور می‌کنند؛ هیچ مقداری داخل متن SQL جایگزین نمی‌شود. برای نام‌های پارامتر پویا همچنان می‌توان از `Dictionary<string, object>` استفاده کرد. این دو روش مخصوص SQL خام هستند و جایگزین query API نوع‌امن `Table<T>()` نیستند.
 
 ## نکات مهم
 
