@@ -16,7 +16,7 @@ internal sealed record SqlBinaryExpression(
 
 internal sealed record SqlNotExpression(SqlExpression Operand) : SqlExpression;
 
-internal sealed record SqlColumnExpression(PropertyMap Property) : SqlExpression;
+internal sealed record SqlColumnExpression(PropertyMap Property, string? TableAlias = null) : SqlExpression;
 
 internal sealed record SqlParameterExpression(object? Value) : SqlExpression;
 

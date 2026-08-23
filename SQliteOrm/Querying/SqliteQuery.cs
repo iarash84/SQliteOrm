@@ -59,6 +59,17 @@ public sealed class SqliteQuery<T> where T : new()
         return New(take: count);
     }
 
+    /// <summary>Creates a strongly typed inner join using mapped key properties.</summary>
+    public SqliteJoinQuery<T, TRight> Join<TRight>(
+        Expression<Func<T, object>> leftKey,
+        Expression<Func<TRight, object>> rightKey) where TRight : new()
+    {
+        if (_orderings.Count > 0 || _skip.HasValue || _take.HasValue)
+            throw new InvalidOperationException("Apply ordering and pagination after join support is extended in a future version.");
+        return new SqliteJoinQuery<T, TRight>(_orm,
+            Querying.MappedSelector.Resolve(leftKey), Querying.MappedSelector.Resolve(rightKey), _predicates);
+    }
+
     /// <summary>Returns all matching entities.</summary>
     public List<T> ToList()
     {
@@ -170,15 +181,7 @@ public sealed class SqliteQuery<T> where T : new()
 
     private static Ordering CreateOrdering<TKey>(Expression<Func<T, TKey>> selector, bool descending)
     {
-        ArgumentNullException.ThrowIfNull(selector);
-        Expression body = selector.Body;
-        while (body is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } unary)
-            body = unary.Operand;
-        if (body is not MemberExpression { Expression: ParameterExpression } member ||
-            member.Expression != selector.Parameters[0])
-            throw new NotSupportedException(
-                $"Ordering selector '{selector}' is not supported. Select one mapped property directly.");
-        return new Ordering(EntityMapCache.Get<T>().GetProperty(member.Member.Name), descending);
+        return new Ordering(Querying.MappedSelector.Resolve(selector), descending);
     }
 
     private SqliteQuery<T> New(IReadOnlyList<Expression<Func<T, bool>>>? predicates = null,

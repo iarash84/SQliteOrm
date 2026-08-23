@@ -17,7 +17,9 @@ internal sealed class SqliteQueryCompiler
 
     private string CompileExpression(SqlExpression expression) => expression switch
     {
-        SqlColumnExpression column => Quote(column.Property.ColumnName),
+        SqlColumnExpression column => column.TableAlias == null
+            ? Quote(column.Property.ColumnName)
+            : $"{Quote(column.TableAlias)}.{Quote(column.Property.ColumnName)}",
         SqlParameterExpression parameter => AddParameter(parameter.Value),
         SqlBinaryExpression binary => $"({CompileExpression(binary.Left)} {Operator(binary.Operator)} {CompileExpression(binary.Right)})",
         SqlNotExpression not => $"(NOT {CompileExpression(not.Operand)})",

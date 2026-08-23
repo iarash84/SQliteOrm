@@ -464,21 +464,50 @@ db.CreateTable<Product>();
 
 SQL executed: `CREATE TABLE IF NOT EXISTS "Category" (...);` and `CREATE TABLE IF NOT EXISTS "Product" (... FOREIGN KEY("CategoryId") REFERENCES "Category"("Id") ...);`
 
-### Join one related table
+### Strongly typed inner join
 
-The related field is returned under the alias in the SQL result. This API maps the main table's mapped properties to `T`; use it when you need the main entities while joining for filtering, or use `Query<T>` with a dedicated projection model when you need to map a custom result shape.
+Use mapped property expressions for both join keys, joined filtering, and projection:
+
+```csharp
+public sealed class ProductWithCategory
+{
+    public int ProductId { get; set; }
+    public string ProductName { get; set; } = string.Empty;
+    public string CategoryName { get; set; } = string.Empty;
+}
+
+var search = "Key";
+var products = db.Table<Product>()
+    .Where(product => product.Name.Contains(search))
+    .Join<Category>(
+        product => product.CategoryId,
+        category => category.Id)
+    .Where((product, category) => category.Name != null)
+    .Select((product, category) => new ProductWithCategory
+    {
+        ProductId = product.Id,
+        ProductName = product.Name,
+        CategoryName = category.Name
+    })
+    .ToList();
+```
+
+SQL executed: `SELECT "t0"."Id" AS "ProductId", "t0"."Name" AS "ProductName", "t1"."Name" AS "CategoryName" FROM "Product" AS "t0" INNER JOIN "Category" AS "t1" ON "t0"."CategoryId" = "t1"."Id" WHERE ...;`
+
+Table and column names come from `EntityMap`, including `[Table]` and `[Column]` overrides. Joined predicates use the same expression AST and parameter compiler as normal queries. The initial public API supports `INNER JOIN` and direct-property object-initializer projections. Computed projection expressions, constructor projections, multiple joins, joined ordering/pagination, and public `LEFT JOIN` are intentionally deferred. The internal join type model already distinguishes inner and left joins for that future extension.
+
+### Legacy single-relation API
+
+The older string-based API remains available for compatibility:
 
 ```csharp
 var products = db.GetAllWithRelation<Product, Category>(
     relationFieldName: nameof(Product.CategoryId),
     relatedFieldName: nameof(Category.Name),
-    aliasName: nameof(Product.CategoryName),
-    conditions: new() { [p => p.Name] = "Keyboard" });
+    aliasName: nameof(Product.CategoryName));
 ```
 
-SQL executed: `SELECT t.*, r."Name" AS "CategoryName" FROM "Product" t INNER JOIN "Category" r ON t."CategoryId" = r."Id" WHERE t."Name" = @Name;`
-
-### Join with the dictionary-based API
+### Legacy dictionary-based joins
 
 ```csharp
 var products = db.GetAllWithRelations<Product>(
@@ -499,7 +528,7 @@ var products = db.GetAllWithRelations<Product>(
 
 SQL executed: `SELECT "p".*, "c"."Name" AS "CategoryName" FROM "Product" "p" INNER JOIN "Category" "c" ON "p"."CategoryId" = "c"."Id" WHERE "p"."Name" = @Name;`
 
-### Join with expression-based relations
+### Legacy tuple-based relations
 
 ```csharp
 var products = db.GetAllWithRelations<Product>(
@@ -604,7 +633,7 @@ SQL executed: `SELECT COUNT(*) FROM "User" WHERE "IsActive" = @active`, `SELECT 
 - Strongly typed predicates support mapped properties, comparisons, boolean composition, null checks, supported string methods, and collection `Contains`; computed arithmetic and arbitrary method calls are rejected.
 - Use `@parameterName` placeholders with `Query`, `ExecuteNonQuery`, and `ExecuteScalar` instead of string interpolation.
 - Mark generated integer keys with `[AutoIncrement]`; `Insert` writes generated values back to entities automatically.
-- The relation APIs map the main entity; use `Query<T>` and a dedicated projection model for custom result shapes.
+- Prefer `Table<T>().Join<TRight>(...).Select(...)`; legacy relation APIs remain for compatibility with existing string/tuple configurations.
 - Create referenced tables before tables that declare foreign keys.
 
 ## Predicate support and limitations
@@ -702,6 +731,22 @@ db.Transaction(tx =>
 ```
 
 تمام عملیات callback از یک connection و transaction مشترک استفاده می‌کنند. در صورت خطا همه تغییرات rollback می‌شوند و nested transaction پشتیبانی نمی‌شود.
+
+## JOIN نوع‌امن
+
+```csharp
+var results = db.Table<Order>()
+    .Join<Customer>(order => order.CustomerId, customer => customer.Id)
+    .Where((order, customer) => customer.IsActive)
+    .Select((order, customer) => new OrderResult
+    {
+        OrderId = order.Id,
+        CustomerName = customer.Name
+    })
+    .ToList();
+```
+
+نام جدول و ستون از metadata خوانده می‌شود و مقدارهای فیلتر همگی پارامتری هستند. نسخه فعلی INNER JOIN و projection مستقیم با object initializer را پشتیبانی می‌کند؛ APIهای رشته‌ای قبلی فقط برای سازگاری باقی مانده‌اند.
 
 `Upsert` با یک دستور اتمیک `INSERT ... ON CONFLICT ... DO UPDATE` اجرا می‌شود و پیش از آن query جداگانه‌ای برای بررسی وجود رکورد اجرا نمی‌کند.
 

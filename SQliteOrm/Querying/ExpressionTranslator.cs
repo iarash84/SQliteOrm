@@ -7,13 +7,31 @@ namespace SQliteOrm.Querying;
 
 internal sealed class ExpressionTranslator<T>
 {
-    private readonly EntityMap<T> _map = EntityMapCache.Get<T>();
-    private ParameterExpression _entityParameter = null!;
+    private readonly Dictionary<ParameterExpression, (EntityMap Map, string? Alias)> _bindings = new();
 
     internal SqlExpression Translate(Expression<Func<T, bool>> predicate)
     {
         ArgumentNullException.ThrowIfNull(predicate);
-        _entityParameter = predicate.Parameters.Single();
+        _bindings.Clear();
+        _bindings[predicate.Parameters.Single()] = (EntityMapCache.Get<T>(), null);
+        return TranslatePredicate(predicate.Body);
+    }
+
+    internal SqlExpression Translate(Expression<Func<T, bool>> predicate, string tableAlias)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        _bindings.Clear();
+        _bindings[predicate.Parameters.Single()] = (EntityMapCache.Get<T>(), tableAlias);
+        return TranslatePredicate(predicate.Body);
+    }
+
+    internal SqlExpression Translate<TRight>(Expression<Func<T, TRight, bool>> predicate,
+        string leftAlias, string rightAlias)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        _bindings.Clear();
+        _bindings[predicate.Parameters[0]] = (EntityMapCache.Get<T>(), leftAlias);
+        _bindings[predicate.Parameters[1]] = (EntityMapCache.Get<TRight>(), rightAlias);
         return TranslatePredicate(predicate.Body);
     }
 
@@ -113,11 +131,16 @@ internal sealed class ExpressionTranslator<T>
         throw Unsupported(expression);
     }
 
-    private SqlColumnExpression Column(MemberExpression member) =>
-        new(_map.GetProperty(member.Member.Name));
+    private SqlColumnExpression Column(MemberExpression member)
+    {
+        var parameter = (ParameterExpression)StripConvert(member.Expression!);
+        var binding = _bindings[parameter];
+        return new SqlColumnExpression(binding.Map.GetProperty(member.Member.Name), binding.Alias);
+    }
 
     private bool IsEntityProperty(MemberExpression member) =>
-        member.Expression != null && StripConvert(member.Expression) == _entityParameter && member.Member is PropertyInfo;
+        member.Expression != null && StripConvert(member.Expression) is ParameterExpression parameter &&
+        _bindings.ContainsKey(parameter) && member.Member is PropertyInfo;
 
     private static bool TryReadCapturedValue(Expression expression, out object? value)
     {
