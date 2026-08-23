@@ -188,16 +188,8 @@ public sealed class SqliteQuery<T> where T : new()
     private SqlitePredicate? BuildPredicate()
     {
         if (_predicates.Count == 0) return null;
-        var translator = new Querying.ExpressionTranslator<T>();
-        Querying.SqlExpression? root = null;
-        foreach (var predicate in _predicates)
-        {
-            var translated = translator.Translate(predicate);
-            root = root == null ? translated : new Querying.SqlBinaryExpression(
-                root, Querying.SqlBinaryOperator.And, translated);
-        }
-        var compiled = new Querying.SqliteQueryCompiler().Compile(root!);
-        return new SqlitePredicate(compiled.Sql, compiled.Parameters.ToDictionary(item => item.Key, item => item.Value));
+        var compiled = Querying.PredicateCompiler<T>.Compile(_predicates);
+        return new SqlitePredicate(compiled.Sql, compiled.Parameters);
     }
 
     private static string Quote(string identifier) => $"\"{identifier.Replace("\"", "\"\"")}\"";

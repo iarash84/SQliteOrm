@@ -259,6 +259,32 @@ public sealed class SqLiteOrmTests : IDisposable
     }
 
     [Fact]
+    public void Predicate_delete_supports_nested_conditions_nulls_and_affected_count()
+    {
+        var youngInactive = NewPerson("Young", 10); youngInactive.Nickname = "known";
+        var nullInactive = NewPerson("Null inactive", 30);
+        var retainedInactive = NewPerson("Retained", 30); retainedInactive.Nickname = "known";
+        var active = NewPerson("Active", 10, true);
+        _orm.Insert(new List<Person> { youngInactive, nullInactive, retainedInactive, active });
+
+        var deleted = _orm.Delete<Person>(person =>
+            !person.Active && (person.Age < 18 || person.Nickname == null));
+
+        Assert.Equal(2, deleted);
+        Assert.Equal(new[] { "Active", "Retained" },
+            _orm.Table<Person>().OrderBy(person => person.Name).ToList().Select(person => person.Name));
+        Assert.Equal(1, _orm.Delete<Person>(person => person.Nickname == null));
+
+        var injection = "Retained' OR 1=1 --";
+        Assert.Equal(0, _orm.Delete<Person>(person => person.Name == injection));
+        Assert.Equal(1, _orm.Count<Person>());
+        Assert.Throws<ArgumentNullException>(() =>
+            _orm.Delete<Person>((Expression<Func<Person, bool>>)null!));
+        Assert.Equal(1, _orm.DeleteAll<Person>());
+        Assert.Equal(0, _orm.Count<Person>());
+    }
+
+    [Fact]
     public void Relation_queries_return_main_entities_and_accept_filters()
     {
         var customerId = _orm.Insert(new Customer { Name = "Contoso" });

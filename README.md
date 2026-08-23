@@ -355,13 +355,29 @@ The selected upsert key must not be null.
 
 ### Delete
 
+Use a strongly typed predicate for conditional deletes. The return value is the number of affected rows:
+
 ```csharp
-db.Delete<User>(42);                         // Legacy int-key overload
-db.Delete<User, Guid>(userKey);              // Any mapped primary-key type
-db.Delete<User>(u => u.Email, "old@example.com"); // Delete by another column
+var cutoff = DateTime.UtcNow.AddYears(-1);
+int deleted = db.Delete<User>(user =>
+    !user.IsActive && user.CreatedAt < cutoff);
 ```
 
-SQL executed: `DELETE FROM "User" WHERE "Id" = @Id;` and `DELETE FROM "User" WHERE "Email" = @Email;`.
+SQL executed: `DELETE FROM "User" WHERE ((NOT ("IsActive" = @p0)) AND ("CreatedAt" < @p1));`
+
+The predicate is required and every runtime value is parameterized. Deleting every row is deliberately separate and explicit:
+
+```csharp
+int deleted = db.DeleteAll<User>();
+```
+
+Primary-key and property/value overloads remain available for compatibility:
+
+```csharp
+db.Delete<User>(42);
+db.Delete<User, Guid>(userKey);
+db.Delete<User>(user => user.Email, "old@example.com");
+```
 
 ## Relationships and joins
 
@@ -545,6 +561,8 @@ SQL executed: `SELECT COUNT(*) FROM "User" WHERE "IsActive" = @active`, `SELECT 
 ## Predicate support and limitations
 
 The strongly typed public query API is backed by an internal predicate pipeline. It translates `Expression<Func<T, bool>>` into a small query AST and then compiles that AST to parameterized SQLite SQL. The older dictionary-based methods remain available for source compatibility but are no longer the recommended query style.
+
+Prefer `Table<T>().Where(...)`, `FirstOrDefault(predicate)`, `Any(predicate)`, `Count(predicate)`, and `Delete(predicate)` for new code. `GetAll` condition dictionaries, `FindOneByKey`, property/value `Exists`, and property/value `Delete` remain compatibility APIs.
 
 The initial translator supports `==`, `!=`, `>`, `>=`, `<`, `<=`, `&&`, `||`, `!`, null equality checks, `string.Contains`, `string.StartsWith`, `string.EndsWith`, and collection `Contains` as `IN`. Column names are resolved through entity metadata, captured values become parameters, LIKE wildcard characters are escaped, and grouping is preserved.
 

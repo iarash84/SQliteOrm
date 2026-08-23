@@ -11,6 +11,7 @@ using System.Data.SQLite;
 using System.Linq;
 using SQliteOrm.Mapping;
 using SQliteOrm.TypeMapping;
+using SQliteOrm.Querying;
 
 namespace SQliteOrm
 {
@@ -423,6 +424,23 @@ namespace SQliteOrm
 
         /// <summary>Deletes an entity using the primary key configured in its metadata.</summary>
         public void Delete<T, TKey>(TKey key) => Delete(CreateKeySelector<T>(GetRequiredKey<T>().PropertyName), key);
+
+        /// <summary>Deletes rows matching a strongly typed predicate and returns the affected row count.</summary>
+        public int Delete<T>(Expression<Func<T, bool>> predicate)
+        {
+            ArgumentNullException.ThrowIfNull(predicate);
+            ValidateType<T>();
+            var compiled = PredicateCompiler<T>.Compile(new[] { predicate });
+            var tableName = QuoteIdentifier(EntityMapCache.Get<T>().TableName);
+            return ExecuteNonQueryAffected($"DELETE FROM {tableName} WHERE {compiled.Sql};", compiled.Parameters);
+        }
+
+        /// <summary>Explicitly deletes every row from the mapped table and returns the affected row count.</summary>
+        public int DeleteAll<T>()
+        {
+            ValidateType<T>();
+            return ExecuteNonQueryAffected($"DELETE FROM {QuoteIdentifier(EntityMapCache.Get<T>().TableName)};");
+        }
 
         /// <summary>
         /// این متد یک رکورد را بر اساس یک مقدار کلید از پایگاه داده حذف می‌کند.
@@ -1213,6 +1231,9 @@ namespace SQliteOrm
         /// <param name="query">کوئری SQL که باید اجرا شود</param>
         /// <param name="parameters">پارامترهای کوئری</param>
         public void ExecuteNonQuery(string query, Dictionary<string, object>? parameters = null)
+            => _ = ExecuteNonQueryAffected(query, parameters);
+
+        internal int ExecuteNonQueryAffected(string query, Dictionary<string, object>? parameters = null)
         {
             if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query cannot be empty.", nameof(query));
             lock (_writeLock)
@@ -1223,7 +1244,7 @@ namespace SQliteOrm
 
                 try
                 {
-                    command.ExecuteNonQuery();
+                    return command.ExecuteNonQuery();
                 }
                 catch (SQLiteException ex)
                 {
