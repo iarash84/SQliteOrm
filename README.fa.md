@@ -1,6 +1,6 @@
 # SQliteOrm
 
-فارسی | [English](README.md)
+فارسی | [English](README.md) | [ویکی پروژه](WIKI.md#فارسی)
 
 SQliteOrm یک micro-ORM سبک، همگام و ویژهٔ SQLite برای .NET 8 است. API فعلی آن instance-based، مبتنی بر metadata، تا حد ممکن نوع‌امن و به‌صورت پیش‌فرض پارامتری است. هدف پروژه ارائهٔ یک LINQ provider کامل یا جایگزین Entity Framework نیست.
 
